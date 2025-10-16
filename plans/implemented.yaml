@@ -1,0 +1,16 @@
+stories:
+  - id: config_propagation_crd
+    path: stories/config_propagation_crd.md
+    status: implemented
+    implemented_at: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    notes: "CRD YAML, core Go types/constants, validation and tests."
+  - id: reconciliation_engine
+    path: .plans/stories/reconciliation_engine.md
+    status: implemented
+    implemented_at: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    notes: "Minimal reconciler, kube client interface, work queue, and plan tests."
+  - id: drift_detection_and_conflicts
+    path: .plans/stories/drift_detection_and_conflicts.md
+    status: implemented
+    implemented_at: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    notes: "Hash-based drift detection with overwrite/skip policies and non-managed target guard."
