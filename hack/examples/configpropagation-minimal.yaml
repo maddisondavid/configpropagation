@@ -1,0 +1,12 @@
+apiVersion: configpropagator.platform.example.com/v1alpha1
+kind: ConfigPropagation
+metadata:
+  name: shared-config
+  namespace: platform-ops
+spec:
+  sourceRef:
+    namespace: platform
+    name: shared-config
+  namespaceSelector:
+    matchLabels:
+      team: payments
