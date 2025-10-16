@@ -1,0 +1,42 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: configpropagation-defaults
+webhooks:
+  - name: cprop-defaults.configpropagator.platform.example.com
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    clientConfig:
+      service:
+        name: configpropagation-webhook
+        namespace: configpropagation-system
+        path: /mutate-configpropagations
+    rules:
+      - apiGroups: ["configpropagator.platform.example.com"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["configpropagations"]
+    reinvocationPolicy: Never
+    timeoutSeconds: 5
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: configpropagation-guardrails
+webhooks:
+  - name: cprop-validate.configpropagator.platform.example.com
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    clientConfig:
+      service:
+        name: configpropagation-webhook
+        namespace: configpropagation-system
+        path: /validate-configpropagations
+    rules:
+      - apiGroups: ["configpropagator.platform.example.com"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["configpropagations"]
+    timeoutSeconds: 5
