@@ -1,0 +1,25 @@
+apiVersion: configpropagator.platform.example.com/v1alpha1
+kind: ConfigPropagation
+metadata:
+  name: logging-rollout
+  namespace: platform-ops
+spec:
+  sourceRef:
+    namespace: platform
+    name: logging-config
+  namespaceSelector:
+    matchExpressions:
+      - key: environment
+        operator: In
+        values:
+          - staging
+          - production
+  dataKeys:
+    - fluent-bit.conf
+    - filters.yaml
+  strategy:
+    type: rolling
+    batchSize: 3
+  conflictPolicy: overwrite
+  prune: true
+  resyncPeriodSeconds: 300

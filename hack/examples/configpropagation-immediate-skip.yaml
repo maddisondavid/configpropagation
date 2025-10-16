@@ -1,0 +1,17 @@
+apiVersion: configpropagator.platform.example.com/v1alpha1
+kind: ConfigPropagation
+metadata:
+  name: console-theme
+  namespace: platform-ops
+spec:
+  sourceRef:
+    namespace: platform
+    name: console-theme
+  namespaceSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: config-team
+  strategy:
+    type: immediate
+  conflictPolicy: skip
+  prune: false
+  resyncPeriodSeconds: 120
