@@ -28,6 +28,38 @@ func TestDefaultAndValidateSpec(t *testing.T) {
 	}
 }
 
+func TestDefaultSpecBatchSizeFromEnv(t *testing.T) {
+	s := &core.ConfigPropagationSpec{
+		SourceRef:         core.ObjectRef{Namespace: "ns", Name: "cfg"},
+		NamespaceSelector: &core.LabelSelector{MatchLabels: map[string]string{"team": "a"}},
+	}
+	t.Setenv("BATCH_SIZE", "10")
+	core.DefaultSpec(s)
+	if s.Strategy.BatchSize == nil || *s.Strategy.BatchSize != 10 {
+		t.Fatalf("expected batchSize 10 from env, got %+v", s.Strategy.BatchSize)
+	}
+
+	t.Setenv("BATCH_SIZE", "0")
+	s2 := &core.ConfigPropagationSpec{
+		SourceRef:         core.ObjectRef{Namespace: "ns", Name: "cfg"},
+		NamespaceSelector: &core.LabelSelector{MatchLabels: map[string]string{"team": "a"}},
+	}
+	core.DefaultSpec(s2)
+	if s2.Strategy.BatchSize == nil || *s2.Strategy.BatchSize != 5 {
+		t.Fatalf("invalid env should fall back to default 5, got %+v", s2.Strategy.BatchSize)
+	}
+
+	t.Setenv("BATCH_SIZE", "not-a-number")
+	s3 := &core.ConfigPropagationSpec{
+		SourceRef:         core.ObjectRef{Namespace: "ns", Name: "cfg"},
+		NamespaceSelector: &core.LabelSelector{MatchLabels: map[string]string{"team": "a"}},
+	}
+	core.DefaultSpec(s3)
+	if s3.Strategy.BatchSize == nil || *s3.Strategy.BatchSize != 5 {
+		t.Fatalf("non-numeric env should fall back to default 5, got %+v", s3.Strategy.BatchSize)
+	}
+}
+
 func TestValidateSpecFailures(t *testing.T) {
 	// Missing source and selector should fail
 	s1 := &core.ConfigPropagationSpec{}

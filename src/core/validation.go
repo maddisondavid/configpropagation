@@ -1,6 +1,10 @@
 package core
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"strconv"
+)
 
 // ValidateSpec enforces basic guardrails that match the CRD schema.
 func ValidateSpec(s *ConfigPropagationSpec) error {
@@ -39,7 +43,7 @@ func DefaultSpec(s *ConfigPropagationSpec) {
 		s.Strategy.Type = StrategyRolling
 	}
 	if s.Strategy.BatchSize == nil {
-		var d int32 = 5
+		d := defaultBatchSize()
 		s.Strategy.BatchSize = &d
 	}
 	if s.ConflictPolicy == "" {
@@ -49,4 +53,13 @@ func DefaultSpec(s *ConfigPropagationSpec) {
 		b := true
 		s.Prune = &b
 	}
+}
+
+func defaultBatchSize() int32 {
+	if v := os.Getenv("BATCH_SIZE"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 1 {
+			return int32(parsed)
+		}
+	}
+	return 5
 }
