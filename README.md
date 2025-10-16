@@ -21,7 +21,9 @@ A reference Kubernetes controller that keeps ConfigMaps in multiple namespaces s
 3. **Deploy** – Package the controller into your preferred deployment mechanism (Deployment, Helm chart, etc.) and apply the CRD plus controller manifest.
 4. **Configure access** – Grant the service account permission to read ConfigMaps in the source namespace, read namespaces, and create/update/delete ConfigMaps cluster-wide.
 
-> **Tip:** The controller respects the `BATCH_SIZE` environment variable when a `strategy.batchSize` is not set in a CR.
+> **Tips:**
+> - The controller respects the `BATCH_SIZE` environment variable when a `strategy.batchSize` is not set in a CR.
+> - Admission guardrails can be toggled per cluster via `STRICT_SELECTOR_GUARD` (rejects wide-open selectors) and `ENFORCE_SOURCE_IMMUTABILITY` (blocks changing the source ConfigMap on updates).
 
 ## Example `ConfigPropagation`
 ```yaml
