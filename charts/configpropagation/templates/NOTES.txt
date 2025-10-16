@@ -1,0 +1,4 @@
+Thank you for installing {{ include "configpropagation.fullname" . }}.
+
+To verify the deployment run:
+  kubectl get pods -n {{ .Release.Namespace }} -l {{ include "configpropagation.selectorLabels" . | replace "\n" "," }}
