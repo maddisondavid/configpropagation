@@ -56,13 +56,16 @@ func TestReconcilerPlanImmediate(t *testing.T) {
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyImmediate},
 		DataKeys:          []string{"a", "c"},
 	}
-	got, err := r.Reconcile(s)
+	result, err := r.Reconcile(s)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
 	want := []string{"ns1", "ns2", "ns3"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("want %v got %v", want, got)
+	if !reflect.DeepEqual(result.Planned, want) {
+		t.Fatalf("want %v got %v", want, result.Planned)
+	}
+	if !reflect.DeepEqual(result.Synced, want) {
+		t.Fatalf("expected all namespaces synced, got %v", result.Synced)
 	}
 }
 
@@ -78,13 +81,16 @@ func TestReconcilerPlanRollingBatch(t *testing.T) {
 		NamespaceSelector: &core.LabelSelector{},
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyRolling, BatchSize: &bs},
 	}
-	got, err := r.Reconcile(s)
+	result, err := r.Reconcile(s)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
 	want := []string{"a", "b"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("want %v got %v", want, got)
+	if !reflect.DeepEqual(result.Planned, want) {
+		t.Fatalf("want %v got %v", want, result.Planned)
+	}
+	if !reflect.DeepEqual(result.Synced, want) {
+		t.Fatalf("expected synced %v got %v", want, result.Synced)
 	}
 }
 
@@ -130,14 +136,22 @@ func TestHelpersComputeEffectiveAndListTargetsAndSyncTargets(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got, []string{"x"}) {
 		t.Fatalf("listTargets failed: %v %v", got, err)
 	}
-	// syncTargets executes loop and returns nil
-	if err := syncTargets(fc, []string{"ns"}, "name", map[string]string{"k": "v"}, "src", core.ConflictOverwrite); err != nil {
+	// syncTargets executes loop and returns result
+	res, err := syncTargets(fc, []string{"ns"}, "name", map[string]string{"k": "v"}, "src", core.ConflictOverwrite)
+	if err != nil {
 		t.Fatalf("syncTargets error: %v", err)
 	}
-	// syncTargets error path
+	if len(res.Synced) != 1 {
+		t.Fatalf("expected synced namespace recorded")
+	}
+	// syncTargets error path yields failure entry
 	bu := &badUpsert{*fc}
-	if err := syncTargets(bu, []string{"ns"}, "name", map[string]string{"k": "v"}, "src", core.ConflictOverwrite); err == nil {
-		t.Fatalf("expected syncTargets to error on upsert")
+	res, err = syncTargets(bu, []string{"ns"}, "name", map[string]string{"k": "v"}, "src", core.ConflictOverwrite)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Failed) != 1 || res.Failed[0].Reason != core.ReasonPermanentError {
+		t.Fatalf("expected permanent failure recorded, got %+v", res.Failed)
 	}
 }
 
@@ -166,11 +180,15 @@ func TestReconcileErrorPaths(t *testing.T) {
 		t.Fatalf("expected error from source get")
 	}
 
-	// Source ok, upsert fails
-	ec := &errClient{fakeClient{data: map[string]map[string]map[string]string{"s": {"n": {}}}, namespaces: []string{"n"}}}
+	// Source ok, upsert fails should record failure but not return error
+	ec := &badUpsert{fakeClient{data: map[string]map[string]map[string]string{"s": {"n": {}}}, namespaces: []string{"n"}}}
 	r2 := NewReconciler(ec)
-	if _, err := r2.Reconcile(s); err == nil {
-		t.Fatalf("expected upsert error")
+	res, err := r2.Reconcile(s)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res == nil || len(res.Failed) == 0 {
+		t.Fatalf("expected failure recorded")
 	}
 
 	// Namespace list fails
@@ -209,11 +227,11 @@ func TestReconcileNoTargetsNoUpserts(t *testing.T) {
 	fc := &fakeClient{data: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, namespaces: []string{}}
 	r := NewReconciler(fc)
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}}
-	planned, err := r.Reconcile(s)
+	result, err := r.Reconcile(s)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(planned) != 0 {
-		t.Fatalf("expected 0 planned, got %d", len(planned))
+	if len(result.Planned) != 0 {
+		t.Fatalf("expected 0 planned, got %d", len(result.Planned))
 	}
 }

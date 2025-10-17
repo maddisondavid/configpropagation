@@ -38,12 +38,13 @@ type UpdateStrategy struct {
 
 // ConfigPropagationStatus reports controller state.
 type ConfigPropagationStatus struct {
-	Conditions     []Condition     `json:"conditions,omitempty"`
-	TargetCount    int32           `json:"targetCount,omitempty"`
-	SyncedCount    int32           `json:"syncedCount,omitempty"`
-	OutOfSyncCount int32           `json:"outOfSyncCount,omitempty"`
-	OutOfSync      []OutOfSyncItem `json:"outOfSync,omitempty"`
-	LastSyncTime   string          `json:"lastSyncTime,omitempty"` // RFC3339
+	Conditions     []Condition        `json:"conditions,omitempty"`
+	TargetCount    int32              `json:"targetCount,omitempty"`
+	SyncedCount    int32              `json:"syncedCount,omitempty"`
+	OutOfSyncCount int32              `json:"outOfSyncCount,omitempty"`
+	OutOfSync      []OutOfSyncItem    `json:"outOfSync,omitempty"`
+	Warnings       []NamespaceWarning `json:"warnings,omitempty"`
+	LastSyncTime   string             `json:"lastSyncTime,omitempty"` // RFC3339
 }
 
 // Condition is a standard status condition.
@@ -60,4 +61,20 @@ type OutOfSyncItem struct {
 	Namespace string `json:"namespace"`
 	Reason    string `json:"reason"`
 	Message   string `json:"message,omitempty"`
+}
+
+// NamespaceWarning captures non-fatal warnings raised during reconciliation.
+type NamespaceWarning struct {
+	Namespace string `json:"namespace"`
+	Reason    string `json:"reason"`
+	Message   string `json:"message,omitempty"`
+}
+
+// SyncResult summarizes a reconciliation attempt.
+type SyncResult struct {
+	Planned  []string
+	Synced   []string
+	Failed   []OutOfSyncItem
+	Warnings []NamespaceWarning
+	Retries  map[string]int
 }
