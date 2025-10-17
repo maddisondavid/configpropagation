@@ -27,3 +27,16 @@ const (
 	ConflictOverwrite = "overwrite"
 	ConflictSkip      = "skip"
 )
+
+// OutOfSync reasons
+const (
+	ReasonRBACDenied      = "RBACDenied"
+	ReasonTransientError  = "TransientError"
+	ReasonPermanentError  = "PermanentError"
+	ReasonPayloadTooLarge = "PayloadTooLarge"
+)
+
+// Warning reasons
+const (
+	WarningLargePayload = "LargePayload"
+)

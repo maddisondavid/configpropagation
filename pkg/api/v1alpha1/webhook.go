@@ -47,21 +47,61 @@ func (c *ConfigPropagation) ValidateUpdate(runtime.Object) (admission.Warnings, 
 // ValidateDelete implements webhook.Validator.
 func (c *ConfigPropagation) ValidateDelete() (admission.Warnings, error) { return nil, nil }
 
-// ApplySuccessStatus updates status fields after a successful reconcile.
-func (c *ConfigPropagation) ApplySuccessStatus(planned int) {
+// ApplySyncResult updates status fields after a reconciliation attempt.
+func (c *ConfigPropagation) ApplySyncResult(result *core.SyncResult) {
 	now := time.Now().UTC().Format(time.RFC3339)
+	var planned, synced int
+	var failures []core.OutOfSyncItem
+	var warnings []core.NamespaceWarning
+	if result != nil {
+		planned = len(result.Planned)
+		synced = len(result.Synced)
+		failures = append([]core.OutOfSyncItem(nil), result.Failed...)
+		if len(result.Warnings) > 0 {
+			warnings = append([]core.NamespaceWarning(nil), result.Warnings...)
+		}
+	}
 	c.Status.LastSyncTime = now
 	c.Status.TargetCount = int32(planned)
-	c.Status.SyncedCount = int32(planned)
-	c.Status.OutOfSyncCount = 0
-	c.Status.OutOfSync = nil
-	c.Status.Conditions = []core.Condition{{
-		Type:               core.CondReady,
-		Status:             "True",
-		Reason:             "Reconciled",
-		Message:            fmt.Sprintf("propagated to %d namespaces", planned),
-		LastTransitionTime: now,
-	}}
+	c.Status.SyncedCount = int32(synced)
+	c.Status.OutOfSyncCount = int32(len(failures))
+	if len(failures) > 0 {
+		c.Status.OutOfSync = failures
+	} else {
+		c.Status.OutOfSync = nil
+	}
+	if len(warnings) > 0 {
+		c.Status.Warnings = warnings
+	} else {
+		c.Status.Warnings = nil
+	}
+	if len(failures) == 0 {
+		c.Status.Conditions = []core.Condition{{
+			Type:               core.CondReady,
+			Status:             "True",
+			Reason:             "Reconciled",
+			Message:            fmt.Sprintf("propagated to %d namespaces", synced),
+			LastTransitionTime: now,
+		}}
+		return
+	}
+	message := fmt.Sprintf("%d of %d namespaces failed", len(failures), planned)
+	c.Status.Conditions = []core.Condition{
+		{
+			Type:               core.CondReady,
+			Status:             "False",
+			Reason:             "Errors",
+			Message:            message,
+			LastTransitionTime: now,
+		},
+		{
+			Type:               core.CondDegraded,
+			Status:             "True",
+			Reason:             "Errors",
+			Message:            message,
+			LastTransitionTime: now,
+		},
+	}
 }
 
 // DeepCopyInto copies the receiver into out.
@@ -188,6 +228,9 @@ func deepCopyStatus(in *core.ConfigPropagationStatus) core.ConfigPropagationStat
 	}
 	if in.OutOfSync != nil {
 		out.OutOfSync = append([]core.OutOfSyncItem(nil), in.OutOfSync...)
+	}
+	if in.Warnings != nil {
+		out.Warnings = append([]core.NamespaceWarning(nil), in.Warnings...)
 	}
 	return out
 }

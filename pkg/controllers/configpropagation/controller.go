@@ -36,7 +36,7 @@ func (r *Reconciler) OnNamespaceLabelChange(ns, name string) {
 }
 
 // Reconcile performs one loop for the next item in the queue.
-func (r *Reconciler) Reconcile(spec *core.ConfigPropagationSpec) ([]string, error) {
+func (r *Reconciler) Reconcile(spec *core.ConfigPropagationSpec) (*core.SyncResult, error) {
 	if spec == nil {
 		return nil, fmt.Errorf("spec is nil")
 	}
@@ -48,7 +48,7 @@ func (r *Reconciler) Reconcile(spec *core.ConfigPropagationSpec) ([]string, erro
 }
 
 // Internal implementation separated for testability and full coverage.
-func reconcileImpl(client adapters.KubeClient, spec *core.ConfigPropagationSpec) ([]string, error) {
+func reconcileImpl(client adapters.KubeClient, spec *core.ConfigPropagationSpec) (*core.SyncResult, error) {
 	srcData, err := client.GetSourceConfigMap(spec.SourceRef.Namespace, spec.SourceRef.Name)
 	if err != nil {
 		return nil, fmt.Errorf("get source: %w", err)
@@ -64,14 +64,15 @@ func reconcileImpl(client adapters.KubeClient, spec *core.ConfigPropagationSpec)
 		batch = *spec.Strategy.BatchSize
 	}
 	planned := planTargets(targets, spec.Strategy.Type, batch)
-	if err := syncTargets(client, planned, spec.SourceRef.Name, effective, spec.SourceRef.Namespace, spec.ConflictPolicy); err != nil {
+	result, err := syncTargets(client, planned, spec.SourceRef.Name, effective, spec.SourceRef.Namespace, spec.ConflictPolicy)
+	if err != nil {
 		return nil, err
 	}
 	// Cleanup deselected namespaces per prune policy
 	if err := cleanupDeselected(client, spec, targets); err != nil {
 		return nil, err
 	}
-	return planned, nil
+	return result, nil
 }
 
 func nilIfEmpty[K comparable, V any](m map[K]V) map[K]V {
@@ -108,7 +109,14 @@ func listTargets(c adapters.KubeClient, sel *core.LabelSelector) ([]string, erro
 	return c.ListNamespacesBySelector(nilIfEmpty(sel.MatchLabels), exprs)
 }
 
-func syncTargets(c adapters.KubeClient, planned []string, name string, effective map[string]string, srcNS string, conflictPolicy string) error {
+func syncTargets(c adapters.KubeClient, planned []string, name string, effective map[string]string, srcNS string, conflictPolicy string) (*core.SyncResult, error) {
+	result := &core.SyncResult{
+		Planned:  append([]string(nil), planned...),
+		Synced:   make([]string, 0, len(planned)),
+		Failed:   []core.OutOfSyncItem{},
+		Warnings: []core.NamespaceWarning{},
+		Retries:  make(map[string]int),
+	}
 	hash := core.HashData(effective)
 	labels := map[string]string{core.ManagedLabel: "true"}
 	source := fmt.Sprintf("%s/%s", srcNS, name)
@@ -116,27 +124,63 @@ func syncTargets(c adapters.KubeClient, planned []string, name string, effective
 		core.SourceAnnotation: source,
 		core.HashAnnotation:   hash,
 	}
-	for _, ns := range planned {
-		_, tgtLabels, tgtAnn, found, err := c.GetTargetConfigMap(ns, name)
-		if err != nil {
-			return fmt.Errorf("get target %s/%s: %w", ns, name, err)
+	sizeCheck := core.CheckConfigMapSize(effective)
+	if sizeCheck.Block {
+		msg := fmt.Sprintf("payload size %dB exceeds ConfigMap limit %dB", sizeCheck.Bytes, core.ConfigMapSizeLimitBytes)
+		for _, ns := range planned {
+			result.Failed = append(result.Failed, core.OutOfSyncItem{Namespace: ns, Reason: core.ReasonPayloadTooLarge, Message: msg})
+			result.Retries[ns] = 0
 		}
-		if found {
-			if tgtLabels[core.ManagedLabel] != "true" && tgtAnn[core.SourceAnnotation] != source {
-				continue
-			}
-			if tgtAnn[core.HashAnnotation] == hash {
-				continue
-			}
-			if conflictPolicy == core.ConflictSkip {
-				continue
-			}
-		}
-		if err := c.UpsertConfigMap(ns, name, effective, labels, annotations); err != nil {
-			return fmt.Errorf("upsert %s/%s: %w", ns, name, err)
-		}
+		return result, nil
 	}
-	return nil
+	for _, ns := range planned {
+		if sizeCheck.Warn {
+			result.Warnings = append(result.Warnings, core.NamespaceWarning{
+				Namespace: ns,
+				Reason:    core.WarningLargePayload,
+				Message:   fmt.Sprintf("payload size %dB approaching limit %dB", sizeCheck.Bytes, core.ConfigMapSizeLimitBytes),
+			})
+		}
+		backoff := core.DefaultBackoff()
+		attempts, err := backoff.Retry(func() error {
+			_, tgtLabels, tgtAnn, found, err := c.GetTargetConfigMap(ns, name)
+			if err != nil {
+				return fmt.Errorf("get target %s/%s: %w", ns, name, err)
+			}
+			if found {
+				if tgtLabels[core.ManagedLabel] != "true" && tgtAnn[core.SourceAnnotation] != source {
+					return nil
+				}
+				if tgtAnn[core.HashAnnotation] == hash {
+					return nil
+				}
+				if conflictPolicy == core.ConflictSkip {
+					return nil
+				}
+			}
+			if err := c.UpsertConfigMap(ns, name, effective, labels, annotations); err != nil {
+				return fmt.Errorf("upsert %s/%s: %w", ns, name, err)
+			}
+			return nil
+		}, func(err error) bool {
+			return core.ClassifyError(err) == core.ErrorCategoryTransient
+		})
+		result.Retries[ns] = attempts
+		if err != nil {
+			category := core.ClassifyError(err)
+			reason := core.ReasonPermanentError
+			switch category {
+			case core.ErrorCategoryRBAC:
+				reason = core.ReasonRBACDenied
+			case core.ErrorCategoryTransient:
+				reason = core.ReasonTransientError
+			}
+			result.Failed = append(result.Failed, core.OutOfSyncItem{Namespace: ns, Reason: reason, Message: err.Error()})
+			continue
+		}
+		result.Synced = append(result.Synced, ns)
+	}
+	return result, nil
 }
 
 func planTargets(all []string, strategy string, batchSize int32) []string {
