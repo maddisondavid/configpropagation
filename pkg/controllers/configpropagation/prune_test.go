@@ -1,10 +1,12 @@
 package configpropagation
 
 import (
-	"configpropagation/pkg/adapters"
-	core "configpropagation/pkg/core"
 	"reflect"
 	"testing"
+
+	"configpropagation/pkg/adapters"
+	"configpropagation/pkg/agents/summary"
+	core "configpropagation/pkg/core"
 )
 
 type fakePruneClient struct {
@@ -42,7 +44,8 @@ func (f *fakePruneClient) UpdateConfigMapMetadata(namespace, name string, labels
 func TestCleanupDeselectedPruneDeletes(t *testing.T) {
 	fc := &fakePruneClient{managed: []string{"a", "b"}}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Prune: boolPtr(true)}
-	if err := cleanupDeselected(fc, s, []string{"a"}); err != nil {
+	actions, err := cleanupDeselected(fc, s, []string{"a"})
+	if err != nil {
 		t.Fatalf("cleanup error: %v", err)
 	}
 	if len(fc.deleted) != 1 || fc.deleted[0] != [2]string{"b", "n"} {
@@ -51,12 +54,16 @@ func TestCleanupDeselectedPruneDeletes(t *testing.T) {
 	if len(fc.detached) != 0 {
 		t.Fatalf("no detaches expected")
 	}
+	if len(actions) != 1 || actions[0].Action != summary.ActionPruned {
+		t.Fatalf("expected prune action recorded, got %+v", actions)
+	}
 }
 
 func TestCleanupDeselectedDetachWhenPruneFalse(t *testing.T) {
 	fc := &fakePruneClient{managed: []string{"a", "b"}}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Prune: boolPtr(false)}
-	if err := cleanupDeselected(fc, s, []string{"a"}); err != nil {
+	actions, err := cleanupDeselected(fc, s, []string{"a"})
+	if err != nil {
 		t.Fatalf("cleanup error: %v", err)
 	}
 	if len(fc.detached) != 1 || fc.detached[0] != [2]string{"b", "n"} {
@@ -64,6 +71,9 @@ func TestCleanupDeselectedDetachWhenPruneFalse(t *testing.T) {
 	}
 	if len(fc.deleted) != 0 {
 		t.Fatalf("no deletes expected")
+	}
+	if len(actions) != 1 || actions[0].Reason != summary.ReasonDetached {
+		t.Fatalf("expected detached reason, got %+v", actions)
 	}
 }
 
@@ -83,11 +93,15 @@ func TestFinalizeCleansAll(t *testing.T) {
 func TestCleanupDeselectedNoopsWhenNoneManaged(t *testing.T) {
 	fc := &fakePruneClient{managed: []string{}}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Prune: boolPtr(true)}
-	if err := cleanupDeselected(fc, s, []string{"a"}); err != nil {
+	actions, err := cleanupDeselected(fc, s, []string{"a"})
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(fc.deleted) != 0 || len(fc.detached) != 0 {
 		t.Fatalf("expected no actions")
+	}
+	if len(actions) != 0 {
+		t.Fatalf("expected no recorded actions")
 	}
 }
 

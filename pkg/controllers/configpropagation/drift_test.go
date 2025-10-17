@@ -1,9 +1,11 @@
 package configpropagation
 
 import (
-	"configpropagation/pkg/adapters"
-	core "configpropagation/pkg/core"
 	"testing"
+
+	"configpropagation/pkg/adapters"
+	"configpropagation/pkg/agents/summary"
+	core "configpropagation/pkg/core"
 )
 
 // fakeDriftClient simulates existing targets with varying annotations/labels.
@@ -48,11 +50,15 @@ func TestDriftOverwriteUpdates(t *testing.T) {
 	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{core.HashAnnotation: "different"}, tgtLbl: map[string]string{core.ManagedLabel: "true"}}
 	r := NewReconciler(f)
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, ConflictPolicy: core.ConflictOverwrite, Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate}}
-	if _, err := r.Reconcile(s); err != nil {
+	res, err := r.Reconcile(s)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.upserts != 1 {
 		t.Fatalf("expected one upsert, got %d", f.upserts)
+	}
+	if res.Count(summary.ActionUpdated) != 1 {
+		t.Fatalf("expected update action recorded, got %d", res.Count(summary.ActionUpdated))
 	}
 }
 
@@ -60,11 +66,15 @@ func TestDriftSkipDoesNotUpdate(t *testing.T) {
 	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{core.HashAnnotation: "different"}, tgtLbl: map[string]string{core.ManagedLabel: "true"}}
 	r := NewReconciler(f)
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, ConflictPolicy: core.ConflictSkip, Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate}}
-	if _, err := r.Reconcile(s); err != nil {
+	res, err := r.Reconcile(s)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.upserts != 0 {
 		t.Fatalf("expected no upserts for skip, got %d", f.upserts)
+	}
+	if res.OutOfSyncCount() != 1 {
+		t.Fatalf("expected out-of-sync entry recorded")
 	}
 }
 
@@ -83,11 +93,15 @@ func TestNoOpWhenHashesMatch(t *testing.T) {
 	// Simulate target now having matching hash by reusing same fake that returns found with same annotations set by previous call
 	// We approximate by setting tgtAnn to the source hash using core.HashData
 	f.tgtAnn[core.HashAnnotation] = core.HashData(map[string]string{"k": "v"})
-	if _, err := r.Reconcile(s); err != nil {
+	res, err := r.Reconcile(s)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.upserts != 1 {
 		t.Fatalf("expected no additional upsert when hashes match, got %d", f.upserts)
+	}
+	if res.Count(summary.ActionSkipped) != 1 {
+		t.Fatalf("expected skip action recorded, got %d", res.Count(summary.ActionSkipped))
 	}
 }
 
@@ -95,10 +109,14 @@ func TestNonManagedTargetIsNotMutated(t *testing.T) {
 	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{"some": "annotation"}, tgtLbl: map[string]string{}}
 	r := NewReconciler(f)
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, ConflictPolicy: core.ConflictOverwrite, Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate}}
-	if _, err := r.Reconcile(s); err != nil {
+	res, err := r.Reconcile(s)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.upserts != 0 {
 		t.Fatalf("expected no upsert on non-managed target, got %d", f.upserts)
+	}
+	if res.OutOfSyncCount() != 1 {
+		t.Fatalf("expected out-of-sync for foreign owner")
 	}
 }

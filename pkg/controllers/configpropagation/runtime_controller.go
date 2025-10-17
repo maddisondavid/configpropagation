@@ -3,6 +3,7 @@ package configpropagation
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -13,6 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"configpropagation/pkg/adapters"
+	metricsadapter "configpropagation/pkg/adapters/metrics"
+	"configpropagation/pkg/agents/status"
 	configv1alpha1 "configpropagation/pkg/api/v1alpha1"
 	"configpropagation/pkg/core"
 )
@@ -22,6 +25,8 @@ type ConfigPropagationController struct {
 	client.Client
 	log        logr.Logger
 	reconciler *Reconciler
+	events     *adapters.EventEmitter
+	metrics    *metricsadapter.Recorder
 }
 
 var _ reconcile.Reconciler = &ConfigPropagationController{}
@@ -33,6 +38,8 @@ func NewController(mgr ctrl.Manager) *ConfigPropagationController {
 		Client:     mgr.GetClient(),
 		log:        ctrl.Log.WithName("controllers").WithName("ConfigPropagation"),
 		reconciler: NewReconciler(kube),
+		events:     adapters.NewEventEmitter(mgr.GetEventRecorderFor("configpropagation")),
+		metrics:    metricsadapter.Default(),
 	}
 }
 
@@ -67,20 +74,31 @@ func (c *ConfigPropagationController) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 
-	planned, err := c.reconciler.Reconcile(&cp.Spec)
-	if err != nil {
-		log.Error(err, "reconciliation failed")
-		return ctrl.Result{}, err
+	start := time.Now()
+	summary, reconcileErr := c.reconciler.Reconcile(&cp.Spec)
+	if reconcileErr != nil {
+		log.Error(reconcileErr, "reconciliation failed")
 	}
 
 	statusPatch := client.MergeFrom(cp.DeepCopy())
-	cp.ApplySuccessStatus(len(planned))
+	cp.Status = status.Compute(cp.Status, summary, reconcileErr, time.Now())
 	if err := c.Status().Patch(ctx, &cp, statusPatch); err != nil {
+		c.metrics.ObserveReconcile(summary, err, time.Since(start))
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
 		}
+		c.events.EmitError(&cp, err)
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 	}
+
+	if reconcileErr != nil {
+		c.metrics.ObserveReconcile(summary, reconcileErr, time.Since(start))
+		c.events.EmitError(&cp, reconcileErr)
+		return ctrl.Result{}, reconcileErr
+	}
+
+	c.metrics.ObserveReconcile(summary, nil, time.Since(start))
+	c.events.EmitSummary(&cp, summary, cp.Spec.SourceRef.Name)
 	return ctrl.Result{}, nil
 }
 

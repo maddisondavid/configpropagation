@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"configpropagation/pkg/adapters"
+	"configpropagation/pkg/agents/summary"
 	"configpropagation/pkg/core"
 )
 
@@ -36,7 +37,7 @@ func (r *Reconciler) OnNamespaceLabelChange(ns, name string) {
 }
 
 // Reconcile performs one loop for the next item in the queue.
-func (r *Reconciler) Reconcile(spec *core.ConfigPropagationSpec) ([]string, error) {
+func (r *Reconciler) Reconcile(spec *core.ConfigPropagationSpec) (*summary.Summary, error) {
 	if spec == nil {
 		return nil, fmt.Errorf("spec is nil")
 	}
@@ -48,7 +49,7 @@ func (r *Reconciler) Reconcile(spec *core.ConfigPropagationSpec) ([]string, erro
 }
 
 // Internal implementation separated for testability and full coverage.
-func reconcileImpl(client adapters.KubeClient, spec *core.ConfigPropagationSpec) ([]string, error) {
+func reconcileImpl(client adapters.KubeClient, spec *core.ConfigPropagationSpec) (*summary.Summary, error) {
 	srcData, err := client.GetSourceConfigMap(spec.SourceRef.Namespace, spec.SourceRef.Name)
 	if err != nil {
 		return nil, fmt.Errorf("get source: %w", err)
@@ -64,14 +65,20 @@ func reconcileImpl(client adapters.KubeClient, spec *core.ConfigPropagationSpec)
 		batch = *spec.Strategy.BatchSize
 	}
 	planned := planTargets(targets, spec.Strategy.Type, batch)
-	if err := syncTargets(client, planned, spec.SourceRef.Name, effective, spec.SourceRef.Namespace, spec.ConflictPolicy); err != nil {
+	sum := &summary.Summary{Planned: planned}
+	actions, outOfSync, err := syncTargets(client, planned, spec.SourceRef.Name, effective, spec.SourceRef.Namespace, spec.ConflictPolicy)
+	if err != nil {
 		return nil, err
 	}
+	sum.Actions = append(sum.Actions, actions...)
+	sum.OutOfSync = append(sum.OutOfSync, outOfSync...)
 	// Cleanup deselected namespaces per prune policy
-	if err := cleanupDeselected(client, spec, targets); err != nil {
+	cleanupActions, err := cleanupDeselected(client, spec, targets)
+	if err != nil {
 		return nil, err
 	}
-	return planned, nil
+	sum.Actions = append(sum.Actions, cleanupActions...)
+	return sum, nil
 }
 
 func nilIfEmpty[K comparable, V any](m map[K]V) map[K]V {
@@ -108,7 +115,7 @@ func listTargets(c adapters.KubeClient, sel *core.LabelSelector) ([]string, erro
 	return c.ListNamespacesBySelector(nilIfEmpty(sel.MatchLabels), exprs)
 }
 
-func syncTargets(c adapters.KubeClient, planned []string, name string, effective map[string]string, srcNS string, conflictPolicy string) error {
+func syncTargets(c adapters.KubeClient, planned []string, name string, effective map[string]string, srcNS string, conflictPolicy string) ([]summary.TargetAction, []core.OutOfSyncItem, error) {
 	hash := core.HashData(effective)
 	labels := map[string]string{core.ManagedLabel: "true"}
 	source := fmt.Sprintf("%s/%s", srcNS, name)
@@ -116,27 +123,39 @@ func syncTargets(c adapters.KubeClient, planned []string, name string, effective
 		core.SourceAnnotation: source,
 		core.HashAnnotation:   hash,
 	}
+	var actions []summary.TargetAction
+	var outOfSync []core.OutOfSyncItem
 	for _, ns := range planned {
 		_, tgtLabels, tgtAnn, found, err := c.GetTargetConfigMap(ns, name)
 		if err != nil {
-			return fmt.Errorf("get target %s/%s: %w", ns, name, err)
+			return nil, nil, fmt.Errorf("get target %s/%s: %w", ns, name, err)
 		}
 		if found {
 			if tgtLabels[core.ManagedLabel] != "true" && tgtAnn[core.SourceAnnotation] != source {
+				actions = append(actions, summary.TargetAction{Namespace: ns, Action: summary.ActionSkipped, Reason: summary.ReasonForeignOwner})
+				outOfSync = append(outOfSync, core.OutOfSyncItem{Namespace: ns, Reason: summary.ReasonForeignOwner, Message: "target not managed by ConfigPropagator"})
 				continue
 			}
 			if tgtAnn[core.HashAnnotation] == hash {
+				actions = append(actions, summary.TargetAction{Namespace: ns, Action: summary.ActionSkipped, Reason: summary.ReasonAlreadySynced})
 				continue
 			}
 			if conflictPolicy == core.ConflictSkip {
+				actions = append(actions, summary.TargetAction{Namespace: ns, Action: summary.ActionSkipped, Reason: summary.ReasonConflictPolicy})
+				outOfSync = append(outOfSync, core.OutOfSyncItem{Namespace: ns, Reason: summary.ReasonConflictPolicy, Message: "existing data differs and conflict policy is skip"})
 				continue
 			}
 		}
 		if err := c.UpsertConfigMap(ns, name, effective, labels, annotations); err != nil {
-			return fmt.Errorf("upsert %s/%s: %w", ns, name, err)
+			return nil, nil, fmt.Errorf("upsert %s/%s: %w", ns, name, err)
 		}
+		action := summary.ActionUpdated
+		if !found {
+			action = summary.ActionCreated
+		}
+		actions = append(actions, summary.TargetAction{Namespace: ns, Action: action, Reason: summary.ReasonApplied})
 	}
-	return nil
+	return actions, outOfSync, nil
 }
 
 func planTargets(all []string, strategy string, batchSize int32) []string {
@@ -154,7 +173,7 @@ func planTargets(all []string, strategy string, batchSize int32) []string {
 
 // cleanupDeselected removes or detaches targets in namespaces that were previously managed
 // but are no longer selected by the label selector.
-func cleanupDeselected(c adapters.KubeClient, spec *core.ConfigPropagationSpec, currentlySelected []string) error {
+func cleanupDeselected(c adapters.KubeClient, spec *core.ConfigPropagationSpec, currentlySelected []string) ([]summary.TargetAction, error) {
 	prune := true
 	if spec.Prune != nil {
 		prune = *spec.Prune
@@ -162,31 +181,34 @@ func cleanupDeselected(c adapters.KubeClient, spec *core.ConfigPropagationSpec, 
 	source := fmt.Sprintf("%s/%s", spec.SourceRef.Namespace, spec.SourceRef.Name)
 	managed, err := c.ListManagedTargetNamespaces(source, spec.SourceRef.Name)
 	if err != nil {
-		return fmt.Errorf("list managed: %w", err)
+		return nil, fmt.Errorf("list managed: %w", err)
 	}
 	// Build set of selected
 	selSet := map[string]struct{}{}
 	for _, ns := range currentlySelected {
 		selSet[ns] = struct{}{}
 	}
+	var actions []summary.TargetAction
 	for _, ns := range managed {
 		if _, ok := selSet[ns]; ok {
 			continue
 		}
 		if prune {
 			if err := c.DeleteConfigMap(ns, spec.SourceRef.Name); err != nil {
-				return fmt.Errorf("delete %s/%s: %w", ns, spec.SourceRef.Name, err)
+				return nil, fmt.Errorf("delete %s/%s: %w", ns, spec.SourceRef.Name, err)
 			}
+			actions = append(actions, summary.TargetAction{Namespace: ns, Action: summary.ActionPruned, Reason: summary.ReasonPruned})
 		} else {
 			// Detach: remove managed markers
 			labels := map[string]string{}
 			annotations := map[string]string{}
 			if err := c.UpdateConfigMapMetadata(ns, spec.SourceRef.Name, labels, annotations); err != nil {
-				return fmt.Errorf("detach %s/%s: %w", ns, spec.SourceRef.Name, err)
+				return nil, fmt.Errorf("detach %s/%s: %w", ns, spec.SourceRef.Name, err)
 			}
+			actions = append(actions, summary.TargetAction{Namespace: ns, Action: summary.ActionPruned, Reason: summary.ReasonDetached})
 		}
 	}
-	return nil
+	return actions, nil
 }
 
 // Finalize performs full cleanup across all managed targets for this CR.
@@ -199,5 +221,6 @@ func (r *Reconciler) Finalize(spec *core.ConfigPropagationSpec) error {
 		return err
 	}
 	// Cleanup with empty selection set
-	return cleanupDeselected(r.client, spec, []string{})
+	_, err := cleanupDeselected(r.client, spec, []string{})
+	return err
 }

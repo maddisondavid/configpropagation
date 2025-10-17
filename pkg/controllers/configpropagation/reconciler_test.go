@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"configpropagation/pkg/adapters"
+	"configpropagation/pkg/agents/summary"
 	"configpropagation/pkg/core"
 )
 
@@ -56,13 +57,13 @@ func TestReconcilerPlanImmediate(t *testing.T) {
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyImmediate},
 		DataKeys:          []string{"a", "c"},
 	}
-	got, err := r.Reconcile(s)
+	sum, err := r.Reconcile(s)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
 	want := []string{"ns1", "ns2", "ns3"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("want %v got %v", want, got)
+	if !reflect.DeepEqual(sum.Planned, want) {
+		t.Fatalf("want %v got %v", want, sum.Planned)
 	}
 }
 
@@ -78,13 +79,13 @@ func TestReconcilerPlanRollingBatch(t *testing.T) {
 		NamespaceSelector: &core.LabelSelector{},
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyRolling, BatchSize: &bs},
 	}
-	got, err := r.Reconcile(s)
+	sum, err := r.Reconcile(s)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
 	want := []string{"a", "b"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("want %v got %v", want, got)
+	if !reflect.DeepEqual(sum.Planned, want) {
+		t.Fatalf("want %v got %v", want, sum.Planned)
 	}
 }
 
@@ -131,12 +132,14 @@ func TestHelpersComputeEffectiveAndListTargetsAndSyncTargets(t *testing.T) {
 		t.Fatalf("listTargets failed: %v %v", got, err)
 	}
 	// syncTargets executes loop and returns nil
-	if err := syncTargets(fc, []string{"ns"}, "name", map[string]string{"k": "v"}, "src", core.ConflictOverwrite); err != nil {
+	if actions, out, err := syncTargets(fc, []string{"ns"}, "name", map[string]string{"k": "v"}, "src", core.ConflictOverwrite); err != nil {
 		t.Fatalf("syncTargets error: %v", err)
+	} else if len(actions) != 1 || actions[0].Action != summary.ActionCreated || len(out) != 0 {
+		t.Fatalf("unexpected sync summary: %+v %+v", actions, out)
 	}
 	// syncTargets error path
 	bu := &badUpsert{*fc}
-	if err := syncTargets(bu, []string{"ns"}, "name", map[string]string{"k": "v"}, "src", core.ConflictOverwrite); err == nil {
+	if _, _, err := syncTargets(bu, []string{"ns"}, "name", map[string]string{"k": "v"}, "src", core.ConflictOverwrite); err == nil {
 		t.Fatalf("expected syncTargets to error on upsert")
 	}
 }
@@ -209,11 +212,31 @@ func TestReconcileNoTargetsNoUpserts(t *testing.T) {
 	fc := &fakeClient{data: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, namespaces: []string{}}
 	r := NewReconciler(fc)
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}}
-	planned, err := r.Reconcile(s)
+	sum, err := r.Reconcile(s)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(planned) != 0 {
-		t.Fatalf("expected 0 planned, got %d", len(planned))
+	if len(sum.Planned) != 0 {
+		t.Fatalf("expected 0 planned, got %d", len(sum.Planned))
+	}
+}
+
+func TestSummaryHelpers(t *testing.T) {
+	s := &summary.Summary{}
+	if s.Count(summary.ActionCreated) != 0 {
+		t.Fatalf("expected zero count for empty summary")
+	}
+	s.Actions = []summary.TargetAction{{Action: summary.ActionCreated}, {Action: summary.ActionPruned}}
+	if s.Count(summary.ActionCreated) != 1 {
+		t.Fatalf("unexpected count")
+	}
+	s.Planned = []string{"a", "b"}
+	s.OutOfSync = []core.OutOfSyncItem{{Namespace: "b"}}
+	if s.SyncedCount() != 1 {
+		t.Fatalf("synced count incorrect: %d", s.SyncedCount())
+	}
+	sorted := s.SortedOutOfSync()
+	if len(sorted) != 1 || sorted[0].Namespace != "b" {
+		t.Fatalf("sorted out-of-sync unexpected: %+v", sorted)
 	}
 }
