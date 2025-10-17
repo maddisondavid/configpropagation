@@ -7,59 +7,71 @@ import (
 )
 
 // ValidateSpec enforces basic guardrails that match the CRD schema.
-func ValidateSpec(s *ConfigPropagationSpec) error {
-	if s == nil {
+func ValidateSpec(spec *ConfigPropagationSpec) error {
+	if spec == nil {
 		return fmt.Errorf("spec is required")
 	}
-	if s.SourceRef.Namespace == "" || s.SourceRef.Name == "" {
+
+	if spec.SourceRef.Namespace == "" || spec.SourceRef.Name == "" {
 		return fmt.Errorf("sourceRef.namespace and sourceRef.name are required")
 	}
-	if s.NamespaceSelector == nil {
+
+	if spec.NamespaceSelector == nil {
 		return fmt.Errorf("namespaceSelector is required")
 	}
-	if s.Strategy != nil {
-		if s.Strategy.Type != "" && s.Strategy.Type != StrategyRolling && s.Strategy.Type != StrategyImmediate {
-			return fmt.Errorf("invalid strategy.type: %s", s.Strategy.Type)
+
+	if spec.Strategy != nil {
+		if spec.Strategy.Type != "" && spec.Strategy.Type != StrategyRolling && spec.Strategy.Type != StrategyImmediate {
+			return fmt.Errorf("invalid strategy.type: %s", spec.Strategy.Type)
 		}
-		if s.Strategy.BatchSize != nil && *s.Strategy.BatchSize < 1 {
+
+		if spec.Strategy.BatchSize != nil && *spec.Strategy.BatchSize < 1 {
 			return fmt.Errorf("strategy.batchSize must be >= 1")
 		}
 	}
-	if s.ConflictPolicy != "" && s.ConflictPolicy != ConflictOverwrite && s.ConflictPolicy != ConflictSkip {
-		return fmt.Errorf("invalid conflictPolicy: %s", s.ConflictPolicy)
+
+	if spec.ConflictPolicy != "" && spec.ConflictPolicy != ConflictOverwrite && spec.ConflictPolicy != ConflictSkip {
+		return fmt.Errorf("invalid conflictPolicy: %s", spec.ConflictPolicy)
 	}
-	if s.ResyncPeriodSeconds != nil && *s.ResyncPeriodSeconds < 10 {
+
+	if spec.ResyncPeriodSeconds != nil && *spec.ResyncPeriodSeconds < 10 {
 		return fmt.Errorf("resyncPeriodSeconds must be >= 10")
 	}
+
 	return nil
 }
 
 // DefaultSpec applies safe defaults consistent with CRD defaults.
-func DefaultSpec(s *ConfigPropagationSpec) {
-	if s.Strategy == nil {
-		s.Strategy = &UpdateStrategy{}
+func DefaultSpec(spec *ConfigPropagationSpec) {
+	if spec.Strategy == nil {
+		spec.Strategy = &UpdateStrategy{}
 	}
-	if s.Strategy.Type == "" {
-		s.Strategy.Type = StrategyRolling
+
+	if spec.Strategy.Type == "" {
+		spec.Strategy.Type = StrategyRolling
 	}
-	if s.Strategy.BatchSize == nil {
-		d := defaultBatchSize()
-		s.Strategy.BatchSize = &d
+
+	if spec.Strategy.BatchSize == nil {
+		defaultValue := defaultBatchSize()
+		spec.Strategy.BatchSize = &defaultValue
 	}
-	if s.ConflictPolicy == "" {
-		s.ConflictPolicy = ConflictOverwrite
+
+	if spec.ConflictPolicy == "" {
+		spec.ConflictPolicy = ConflictOverwrite
 	}
-	if s.Prune == nil {
-		b := true
-		s.Prune = &b
+
+	if spec.Prune == nil {
+		shouldPrune := true
+		spec.Prune = &shouldPrune
 	}
 }
 
 func defaultBatchSize() int32 {
-	if v := os.Getenv("BATCH_SIZE"); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 1 {
+	if environmentValue := os.Getenv("BATCH_SIZE"); environmentValue != "" {
+		if parsed, err := strconv.Atoi(environmentValue); err == nil && parsed >= 1 {
 			return int32(parsed)
 		}
 	}
+
 	return 5
 }

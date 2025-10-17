@@ -20,141 +20,184 @@ type controllerRuntimeClient struct {
 }
 
 // NewControllerRuntimeClient returns a KubeClient backed by a controller-runtime client.Client.
-func NewControllerRuntimeClient(c client.Client) KubeClient {
-	return &controllerRuntimeClient{client: c}
+func NewControllerRuntimeClient(kubeClient client.Client) KubeClient {
+	return &controllerRuntimeClient{client: kubeClient}
 }
 
-func (c *controllerRuntimeClient) GetSourceConfigMap(namespace, name string) (map[string]string, error) {
-	ctx := context.Background()
-	var cm corev1.ConfigMap
-	if err := c.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cm); err != nil {
+func (clientAdapter *controllerRuntimeClient) GetSourceConfigMap(namespace, name string) (map[string]string, error) {
+	requestContext := context.Background()
+
+	var configMap corev1.ConfigMap
+
+	if err := clientAdapter.client.Get(requestContext, types.NamespacedName{Namespace: namespace, Name: name}, &configMap); err != nil {
 		return nil, err
 	}
-	return copyStringMap(cm.Data), nil
+
+	return copyStringMap(configMap.Data), nil
 }
 
-func (c *controllerRuntimeClient) ListNamespacesBySelector(matchLabels map[string]string, exprs []LabelSelectorRequirement) ([]string, error) {
-	ctx := context.Background()
+func (clientAdapter *controllerRuntimeClient) ListNamespacesBySelector(matchLabels map[string]string, selectorRequirements []LabelSelectorRequirement) ([]string, error) {
+	requestContext := context.Background()
+
 	selector := labels.NewSelector()
-	for k, v := range matchLabels {
-		req, err := labels.NewRequirement(k, selection.Equals, []string{v})
+
+	for labelKey, labelValue := range matchLabels {
+		requirement, err := labels.NewRequirement(labelKey, selection.Equals, []string{labelValue})
 		if err != nil {
 			return nil, err
 		}
-		selector = selector.Add(*req)
+
+		selector = selector.Add(*requirement)
 	}
-	for _, expr := range exprs {
-		op, err := toSelectionOperator(expr.Operator)
+
+	for _, requirement := range selectorRequirements {
+		selectionOperator, err := toSelectionOperator(requirement.Operator)
 		if err != nil {
 			return nil, err
 		}
-		req, err := labels.NewRequirement(expr.Key, op, expr.Values)
+
+		typedRequirement, err := labels.NewRequirement(requirement.Key, selectionOperator, requirement.Values)
 		if err != nil {
 			return nil, err
 		}
-		selector = selector.Add(*req)
+
+		selector = selector.Add(*typedRequirement)
 	}
+
 	var namespaces corev1.NamespaceList
-	if err := c.client.List(ctx, &namespaces); err != nil {
+
+	if err := clientAdapter.client.List(requestContext, &namespaces); err != nil {
 		return nil, err
 	}
-	var result []string
-	for _, ns := range namespaces.Items {
-		if selector.Empty() || selector.Matches(labels.Set(ns.Labels)) {
-			result = append(result, ns.Name)
+
+	var namespaceNames []string
+
+	for _, namespaceItem := range namespaces.Items {
+		if selector.Empty() || selector.Matches(labels.Set(namespaceItem.Labels)) {
+			namespaceNames = append(namespaceNames, namespaceItem.Name)
 		}
 	}
-	return result, nil
+
+	return namespaceNames, nil
 }
 
-func (c *controllerRuntimeClient) UpsertConfigMap(namespace, name string, data map[string]string, labelsMap, annotations map[string]string) error {
-	ctx := context.Background()
-	var existing corev1.ConfigMap
-	err := c.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &existing)
+func (clientAdapter *controllerRuntimeClient) UpsertConfigMap(namespace, name string, data map[string]string, labelsMap, annotations map[string]string) error {
+	requestContext := context.Background()
+
+	var existingConfigMap corev1.ConfigMap
+
+	err := clientAdapter.client.Get(requestContext, types.NamespacedName{Namespace: namespace, Name: name}, &existingConfigMap)
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			return err
 		}
-		cm := corev1.ConfigMap{}
-		cm.Namespace = namespace
-		cm.Name = name
-		cm.Data = copyStringMap(data)
-		cm.Labels = copyStringMap(labelsMap)
-		cm.Annotations = copyStringMap(annotations)
-		return c.client.Create(ctx, &cm)
+
+		configMap := corev1.ConfigMap{}
+		configMap.Namespace = namespace
+		configMap.Name = name
+		configMap.Data = copyStringMap(data)
+		configMap.Labels = copyStringMap(labelsMap)
+		configMap.Annotations = copyStringMap(annotations)
+
+		return clientAdapter.client.Create(requestContext, &configMap)
 	}
-	existing.Data = copyStringMap(data)
-	if existing.Labels == nil {
-		existing.Labels = map[string]string{}
+
+	existingConfigMap.Data = copyStringMap(data)
+
+	if existingConfigMap.Labels == nil {
+		existingConfigMap.Labels = map[string]string{}
 	}
-	if existing.Annotations == nil {
-		existing.Annotations = map[string]string{}
+
+	if existingConfigMap.Annotations == nil {
+		existingConfigMap.Annotations = map[string]string{}
 	}
-	for k := range existing.Labels {
-		delete(existing.Labels, k)
+
+	for key := range existingConfigMap.Labels {
+		delete(existingConfigMap.Labels, key)
 	}
-	for k := range existing.Annotations {
-		delete(existing.Annotations, k)
+
+	for key := range existingConfigMap.Annotations {
+		delete(existingConfigMap.Annotations, key)
 	}
-	for k, v := range labelsMap {
-		existing.Labels[k] = v
+
+	for key, value := range labelsMap {
+		existingConfigMap.Labels[key] = value
 	}
-	for k, v := range annotations {
-		existing.Annotations[k] = v
+
+	for key, value := range annotations {
+		existingConfigMap.Annotations[key] = value
 	}
-	return c.client.Update(ctx, &existing)
+
+	return clientAdapter.client.Update(requestContext, &existingConfigMap)
 }
 
-func (c *controllerRuntimeClient) GetTargetConfigMap(namespace, name string) (map[string]string, map[string]string, map[string]string, bool, error) {
-	ctx := context.Background()
-	var cm corev1.ConfigMap
-	if err := c.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cm); err != nil {
+func (clientAdapter *controllerRuntimeClient) GetTargetConfigMap(namespace, name string) (map[string]string, map[string]string, map[string]string, bool, error) {
+	requestContext := context.Background()
+
+	var configMap corev1.ConfigMap
+
+	if err := clientAdapter.client.Get(requestContext, types.NamespacedName{Namespace: namespace, Name: name}, &configMap); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil, nil, false, nil
 		}
+
 		return nil, nil, nil, false, err
 	}
-	return copyStringMap(cm.Data), copyStringMap(cm.Labels), copyStringMap(cm.Annotations), true, nil
+
+	return copyStringMap(configMap.Data), copyStringMap(configMap.Labels), copyStringMap(configMap.Annotations), true, nil
 }
 
-func (c *controllerRuntimeClient) ListManagedTargetNamespaces(source string, name string) ([]string, error) {
-	ctx := context.Background()
-	var cms corev1.ConfigMapList
-	if err := c.client.List(ctx, &cms, client.MatchingLabels{core.ManagedLabel: "true"}); err != nil {
+func (clientAdapter *controllerRuntimeClient) ListManagedTargetNamespaces(source string, name string) ([]string, error) {
+	requestContext := context.Background()
+
+	var configMapList corev1.ConfigMapList
+
+	if err := clientAdapter.client.List(requestContext, &configMapList, client.MatchingLabels{core.ManagedLabel: "true"}); err != nil {
 		return nil, err
 	}
+
 	var namespaces []string
-	for _, cm := range cms.Items {
-		if cm.Name != name {
+
+	for _, configMap := range configMapList.Items {
+		if configMap.Name != name {
 			continue
 		}
-		if cm.Annotations[core.SourceAnnotation] != source {
+
+		if configMap.Annotations[core.SourceAnnotation] != source {
 			continue
 		}
-		namespaces = append(namespaces, cm.Namespace)
+
+		namespaces = append(namespaces, configMap.Namespace)
 	}
+
 	return namespaces, nil
 }
 
-func (c *controllerRuntimeClient) DeleteConfigMap(namespace, name string) error {
-	ctx := context.Background()
-	cm := corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
-	return client.IgnoreNotFound(c.client.Delete(ctx, &cm))
+func (clientAdapter *controllerRuntimeClient) DeleteConfigMap(namespace, name string) error {
+	requestContext := context.Background()
+
+	configMap := corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
+
+	return client.IgnoreNotFound(clientAdapter.client.Delete(requestContext, &configMap))
 }
 
-func (c *controllerRuntimeClient) UpdateConfigMapMetadata(namespace, name string, labelsMap, annotations map[string]string) error {
-	ctx := context.Background()
-	var cm corev1.ConfigMap
-	if err := c.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cm); err != nil {
+func (clientAdapter *controllerRuntimeClient) UpdateConfigMapMetadata(namespace, name string, labelsMap, annotations map[string]string) error {
+	requestContext := context.Background()
+
+	var configMap corev1.ConfigMap
+
+	if err := clientAdapter.client.Get(requestContext, types.NamespacedName{Namespace: namespace, Name: name}, &configMap); err != nil {
 		return err
 	}
-	cm.Labels = copyStringMap(labelsMap)
-	cm.Annotations = copyStringMap(annotations)
-	return c.client.Update(ctx, &cm)
+
+	configMap.Labels = copyStringMap(labelsMap)
+	configMap.Annotations = copyStringMap(annotations)
+
+	return clientAdapter.client.Update(requestContext, &configMap)
 }
 
-func toSelectionOperator(op string) (selection.Operator, error) {
-	switch op {
+func toSelectionOperator(operator string) (selection.Operator, error) {
+	switch operator {
 	case "In":
 		return selection.In, nil
 	case "NotIn":
@@ -164,17 +207,20 @@ func toSelectionOperator(op string) (selection.Operator, error) {
 	case "DoesNotExist":
 		return selection.DoesNotExist, nil
 	default:
-		return selection.Operator(""), fmt.Errorf("unsupported operator %s", op)
+		return selection.Operator(""), fmt.Errorf("unsupported operator %s", operator)
 	}
 }
 
-func copyStringMap(in map[string]string) map[string]string {
-	if len(in) == 0 {
+func copyStringMap(source map[string]string) map[string]string {
+	if len(source) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
+
+	copied := make(map[string]string, len(source))
+
+	for key, value := range source {
+		copied[key] = value
 	}
-	return out
+
+	return copied
 }

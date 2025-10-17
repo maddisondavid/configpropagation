@@ -29,6 +29,7 @@ var _ reconcile.Reconciler = &ConfigPropagationController{}
 // NewController constructs a ConfigPropagationController wired with the manager's client.
 func NewController(manager ctrl.Manager) *ConfigPropagationController {
 	kubeClient := adapters.NewControllerRuntimeClient(manager.GetClient())
+
 	return &ConfigPropagationController{
 		Client:     manager.GetClient(),
 		logger:     ctrl.Log.WithName("controllers").WithName("ConfigPropagation"),
@@ -37,15 +38,16 @@ func NewController(manager ctrl.Manager) *ConfigPropagationController {
 }
 
 // Reconcile runs the core reconciliation logic for a ConfigPropagation instance.
-func (c *ConfigPropagationController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := c.logger.WithValues("configpropagation", req.NamespacedName)
+func (controller *ConfigPropagationController) Reconcile(requestContext context.Context, reconcileRequest ctrl.Request) (ctrl.Result, error) {
+	requestLogger := controller.logger.WithValues("configpropagation", reconcileRequest.NamespacedName)
 
 	var configPropagation configv1alpha1.ConfigPropagation
 
-	if err := c.Get(ctx, req.NamespacedName, &configPropagation); err != nil {
+	if err := controller.Get(requestContext, reconcileRequest.NamespacedName, &configPropagation); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
+
 		return ctrl.Result{}, err
 	}
 
@@ -53,27 +55,30 @@ func (c *ConfigPropagationController) Reconcile(ctx context.Context, req ctrl.Re
 		if !controllerutil.ContainsFinalizer(&configPropagation, core.Finalizer) {
 			controllerutil.AddFinalizer(&configPropagation, core.Finalizer)
 
-			if err := c.Update(ctx, &configPropagation); err != nil {
+			if err := controller.Update(requestContext, &configPropagation); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
 	} else {
 		if controllerutil.ContainsFinalizer(&configPropagation, core.Finalizer) {
-			if err := c.reconciler.Finalize(&configPropagation.Spec); err != nil {
+			if err := controller.reconciler.Finalize(&configPropagation.Spec); err != nil {
 				return ctrl.Result{}, err
 			}
+
 			controllerutil.RemoveFinalizer(&configPropagation, core.Finalizer)
 
-			if err := c.Update(ctx, &configPropagation); err != nil {
+			if err := controller.Update(requestContext, &configPropagation); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
+
 		return ctrl.Result{}, nil
 	}
 
-	result, err := c.reconciler.Reconcile(Key{Namespace: req.Namespace, Name: req.Name}, &configPropagation.Spec)
+	result, err := controller.reconciler.Reconcile(Key{Namespace: reconcileRequest.Namespace, Name: reconcileRequest.Name}, &configPropagation.Spec)
 	if err != nil {
-		logger.Error(err, "reconciliation failed")
+		requestLogger.Error(err, "reconciliation failed")
+
 		return ctrl.Result{}, err
 	}
 
@@ -81,12 +86,14 @@ func (c *ConfigPropagationController) Reconcile(ctx context.Context, req ctrl.Re
 
 	configPropagation.ApplyRolloutStatus(result)
 
-	if err := c.Status().Patch(ctx, &configPropagation, statusPatch); err != nil {
+	if err := controller.Status().Patch(requestContext, &configPropagation, statusPatch); err != nil {
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
 		}
+
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 	}
+
 	return ctrl.Result{}, nil
 }
 

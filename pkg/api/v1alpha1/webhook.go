@@ -19,187 +19,222 @@ var _ runtime.Object = &ConfigPropagation{}
 var _ runtime.Object = &ConfigPropagationList{}
 
 // Default implements webhook.Defaulter.
-func (c *ConfigPropagation) Default() { core.DefaultSpec(&c.Spec) }
+func (configPropagation *ConfigPropagation) Default() { core.DefaultSpec(&configPropagation.Spec) }
 
 // SetupWebhookWithManager registers the webhook with the provided manager.
-func (c *ConfigPropagation) SetupWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(c).
+func (configPropagation *ConfigPropagation) SetupWebhookWithManager(manager ctrl.Manager) error {
+	return ctrl.NewWebhookManagedBy(manager).
+		For(configPropagation).
 		Complete()
 }
 
 // ValidateCreate implements webhook.Validator.
-func (c *ConfigPropagation) ValidateCreate() (admission.Warnings, error) {
-	if err := core.ValidateSpec(&c.Spec); err != nil {
+func (configPropagation *ConfigPropagation) ValidateCreate() (admission.Warnings, error) {
+	if err := core.ValidateSpec(&configPropagation.Spec); err != nil {
 		return nil, err
 	}
+
 	return nil, nil
 }
 
 // ValidateUpdate implements webhook.Validator.
-func (c *ConfigPropagation) ValidateUpdate(runtime.Object) (admission.Warnings, error) {
-	if err := core.ValidateSpec(&c.Spec); err != nil {
+func (configPropagation *ConfigPropagation) ValidateUpdate(runtime.Object) (admission.Warnings, error) {
+	if err := core.ValidateSpec(&configPropagation.Spec); err != nil {
 		return nil, err
 	}
+
 	return nil, nil
 }
 
 // ValidateDelete implements webhook.Validator.
-func (c *ConfigPropagation) ValidateDelete() (admission.Warnings, error) { return nil, nil }
+func (configPropagation *ConfigPropagation) ValidateDelete() (admission.Warnings, error) {
+	return nil, nil
+}
 
 // ApplyRolloutStatus updates status fields after a reconcile using rollout progress.
-func (c *ConfigPropagation) ApplyRolloutStatus(result core.RolloutResult) {
-	now := time.Now().UTC().Format(time.RFC3339)
-	c.Status.LastSyncTime = now
-	c.Status.TargetCount = int32(result.TotalTargets)
-	c.Status.SyncedCount = int32(result.CompletedCount)
-	pending := result.TotalTargets - result.CompletedCount
-	if pending < 0 {
-		pending = 0
+func (configPropagation *ConfigPropagation) ApplyRolloutStatus(result core.RolloutResult) {
+	currentTime := time.Now().UTC().Format(time.RFC3339)
+
+	configPropagation.Status.LastSyncTime = currentTime
+	configPropagation.Status.TargetCount = int32(result.TotalTargets)
+	configPropagation.Status.SyncedCount = int32(result.CompletedCount)
+
+	pendingCount := result.TotalTargets - result.CompletedCount
+	if pendingCount < 0 {
+		pendingCount = 0
 	}
-	c.Status.OutOfSyncCount = int32(pending)
-	c.Status.OutOfSync = nil
-	reason := "Reconciled"
-	message := fmt.Sprintf("propagated to %d/%d namespaces", result.CompletedCount, result.TotalTargets)
-	status := "True"
-	if pending > 0 {
-		reason = "RollingUpdate"
-		message = fmt.Sprintf("propagated to %d/%d namespaces (batch of %d)", result.CompletedCount, result.TotalTargets, len(result.Planned))
-		status = "False"
+
+	configPropagation.Status.OutOfSyncCount = int32(pendingCount)
+	configPropagation.Status.OutOfSync = nil
+
+	conditionReason := "Reconciled"
+	conditionMessage := fmt.Sprintf("propagated to %d/%d namespaces", result.CompletedCount, result.TotalTargets)
+	conditionStatus := "True"
+
+	if pendingCount > 0 {
+		conditionReason = "RollingUpdate"
+		conditionMessage = fmt.Sprintf("propagated to %d/%d namespaces (batch of %d)", result.CompletedCount, result.TotalTargets, len(result.Planned))
+		conditionStatus = "False"
 	}
-	c.Status.Conditions = []core.Condition{{
+
+	configPropagation.Status.Conditions = []core.Condition{{
 		Type:               core.CondReady,
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: now,
+		Status:             conditionStatus,
+		Reason:             conditionReason,
+		Message:            conditionMessage,
+		LastTransitionTime: currentTime,
 	}}
 }
 
 // DeepCopyInto copies the receiver into out.
-func (c *ConfigPropagation) DeepCopyInto(out *ConfigPropagation) {
-	if c == nil || out == nil {
+func (configPropagation *ConfigPropagation) DeepCopyInto(out *ConfigPropagation) {
+	if configPropagation == nil || out == nil {
 		return
 	}
-	*out = *c
-	c.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	specCopy := deepCopySpec((*core.ConfigPropagationSpec)(&c.Spec))
+	*out = *configPropagation
+	configPropagation.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+
+	specCopy := deepCopySpec((*core.ConfigPropagationSpec)(&configPropagation.Spec))
 	out.Spec = specCopy
-	statusCopy := deepCopyStatus((*core.ConfigPropagationStatus)(&c.Status))
+
+	statusCopy := deepCopyStatus((*core.ConfigPropagationStatus)(&configPropagation.Status))
 	out.Status = statusCopy
 }
 
 // DeepCopy creates a new deep copy of the receiver.
-func (c *ConfigPropagation) DeepCopy() *ConfigPropagation {
-	if c == nil {
+func (configPropagation *ConfigPropagation) DeepCopy() *ConfigPropagation {
+	if configPropagation == nil {
 		return nil
 	}
+
 	out := new(ConfigPropagation)
-	c.DeepCopyInto(out)
+
+	configPropagation.DeepCopyInto(out)
 	return out
 }
 
 // DeepCopyObject returns a deep copy as a runtime.Object.
-func (c *ConfigPropagation) DeepCopyObject() runtime.Object {
-	if c == nil {
+func (configPropagation *ConfigPropagation) DeepCopyObject() runtime.Object {
+	if configPropagation == nil {
 		return nil
 	}
-	return c.DeepCopy()
+
+	return configPropagation.DeepCopy()
 }
 
 // DeepCopyInto copies the receiver into out.
-func (c *ConfigPropagationList) DeepCopyInto(out *ConfigPropagationList) {
-	if c == nil || out == nil {
+func (configPropagationList *ConfigPropagationList) DeepCopyInto(out *ConfigPropagationList) {
+	if configPropagationList == nil || out == nil {
 		return
 	}
-	*out = *c
-	c.ListMeta.DeepCopyInto(&out.ListMeta)
-	if c.Items != nil {
-		out.Items = make([]ConfigPropagation, len(c.Items))
-		for i := range c.Items {
-			c.Items[i].DeepCopyInto(&out.Items[i])
+	*out = *configPropagationList
+	configPropagationList.ListMeta.DeepCopyInto(&out.ListMeta)
+
+	if configPropagationList.Items != nil {
+		out.Items = make([]ConfigPropagation, len(configPropagationList.Items))
+
+		for index := range configPropagationList.Items {
+			configPropagationList.Items[index].DeepCopyInto(&out.Items[index])
 		}
 	}
 }
 
 // DeepCopy creates a new deep copy of the list.
-func (c *ConfigPropagationList) DeepCopy() *ConfigPropagationList {
-	if c == nil {
+func (configPropagationList *ConfigPropagationList) DeepCopy() *ConfigPropagationList {
+	if configPropagationList == nil {
 		return nil
 	}
+
 	out := new(ConfigPropagationList)
-	c.DeepCopyInto(out)
+
+	configPropagationList.DeepCopyInto(out)
 	return out
 }
 
 // DeepCopyObject returns a deep copy of the list as a runtime.Object.
-func (c *ConfigPropagationList) DeepCopyObject() runtime.Object {
-	if c == nil {
+func (configPropagationList *ConfigPropagationList) DeepCopyObject() runtime.Object {
+	if configPropagationList == nil {
 		return nil
 	}
-	return c.DeepCopy()
+
+	return configPropagationList.DeepCopy()
 }
 
-func deepCopySpec(in *core.ConfigPropagationSpec) core.ConfigPropagationSpec {
-	if in == nil {
+func deepCopySpec(source *core.ConfigPropagationSpec) core.ConfigPropagationSpec {
+	if source == nil {
 		return core.ConfigPropagationSpec{}
 	}
-	out := *in
-	if in.NamespaceSelector != nil {
-		selector := *in.NamespaceSelector
-		if in.NamespaceSelector.MatchLabels != nil {
-			selector.MatchLabels = make(map[string]string, len(in.NamespaceSelector.MatchLabels))
-			for k, v := range in.NamespaceSelector.MatchLabels {
-				selector.MatchLabels[k] = v
+	copiedSpec := *source
+
+	if source.NamespaceSelector != nil {
+		selectorCopy := *source.NamespaceSelector
+
+		if source.NamespaceSelector.MatchLabels != nil {
+			selectorCopy.MatchLabels = make(map[string]string, len(source.NamespaceSelector.MatchLabels))
+
+			for labelKey, labelValue := range source.NamespaceSelector.MatchLabels {
+				selectorCopy.MatchLabels[labelKey] = labelValue
 			}
 		}
-		if in.NamespaceSelector.MatchExpressions != nil {
-			selector.MatchExpressions = append([]core.LabelSelectorReq(nil), in.NamespaceSelector.MatchExpressions...)
+
+		if source.NamespaceSelector.MatchExpressions != nil {
+			selectorCopy.MatchExpressions = append([]core.LabelSelectorReq(nil), source.NamespaceSelector.MatchExpressions...)
 		}
-		out.NamespaceSelector = &selector
+
+		copiedSpec.NamespaceSelector = &selectorCopy
 	} else {
-		out.NamespaceSelector = nil
+		copiedSpec.NamespaceSelector = nil
 	}
-	if in.DataKeys != nil {
-		out.DataKeys = append([]string(nil), in.DataKeys...)
+
+	if source.DataKeys != nil {
+		copiedSpec.DataKeys = append([]string(nil), source.DataKeys...)
 	}
-	if in.Strategy != nil {
-		strategy := *in.Strategy
-		if in.Strategy.BatchSize != nil {
-			batch := *in.Strategy.BatchSize
-			strategy.BatchSize = &batch
+
+	if source.Strategy != nil {
+		strategyCopy := *source.Strategy
+
+		if source.Strategy.BatchSize != nil {
+			batchSizeCopy := *source.Strategy.BatchSize
+			strategyCopy.BatchSize = &batchSizeCopy
 		} else {
-			strategy.BatchSize = nil
+			strategyCopy.BatchSize = nil
 		}
-		out.Strategy = &strategy
+
+		copiedSpec.Strategy = &strategyCopy
 	} else {
-		out.Strategy = nil
+		copiedSpec.Strategy = nil
 	}
-	if in.Prune != nil {
-		prune := *in.Prune
-		out.Prune = &prune
+
+	if source.Prune != nil {
+		pruneCopy := *source.Prune
+		copiedSpec.Prune = &pruneCopy
 	} else {
-		out.Prune = nil
+		copiedSpec.Prune = nil
 	}
-	if in.ResyncPeriodSeconds != nil {
-		period := *in.ResyncPeriodSeconds
-		out.ResyncPeriodSeconds = &period
+
+	if source.ResyncPeriodSeconds != nil {
+		resyncPeriodCopy := *source.ResyncPeriodSeconds
+		copiedSpec.ResyncPeriodSeconds = &resyncPeriodCopy
 	} else {
-		out.ResyncPeriodSeconds = nil
+		copiedSpec.ResyncPeriodSeconds = nil
 	}
-	return out
+
+	return copiedSpec
 }
 
-func deepCopyStatus(in *core.ConfigPropagationStatus) core.ConfigPropagationStatus {
-	if in == nil {
+func deepCopyStatus(source *core.ConfigPropagationStatus) core.ConfigPropagationStatus {
+	if source == nil {
 		return core.ConfigPropagationStatus{}
 	}
-	out := *in
-	if in.Conditions != nil {
-		out.Conditions = append([]core.Condition(nil), in.Conditions...)
+	copiedStatus := *source
+
+	if source.Conditions != nil {
+		copiedStatus.Conditions = append([]core.Condition(nil), source.Conditions...)
 	}
-	if in.OutOfSync != nil {
-		out.OutOfSync = append([]core.OutOfSyncItem(nil), in.OutOfSync...)
+
+	if source.OutOfSync != nil {
+		copiedStatus.OutOfSync = append([]core.OutOfSyncItem(nil), source.OutOfSync...)
 	}
-	return out
+
+	return copiedStatus
 }

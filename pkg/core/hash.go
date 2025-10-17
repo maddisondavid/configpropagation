@@ -13,18 +13,25 @@ func HashData(data map[string]string) string {
 	if len(data) == 0 {
 		return ""
 	}
+
 	keys := make([]string, 0, len(data))
-	for k := range data {
-		keys = append(keys, k)
+
+	for key := range data {
+		keys = append(keys, key)
 	}
+
 	sort.Strings(keys)
-	b := strings.Builder{}
-	for _, k := range keys {
-		b.WriteString(k)
-		b.WriteRune('\u0000')
-		b.WriteString(data[k])
-		b.WriteRune('\n')
+
+	stringBuilder := strings.Builder{}
+
+	for _, key := range keys {
+		stringBuilder.WriteString(key)
+		stringBuilder.WriteRune('\u0000')
+		stringBuilder.WriteString(data[key])
+		stringBuilder.WriteRune('\n')
 	}
-	sum := sha256.Sum256([]byte(b.String()))
-	return hex.EncodeToString(sum[:])
+
+	hashSum := sha256.Sum256([]byte(stringBuilder.String()))
+
+	return hex.EncodeToString(hashSum[:])
 }
