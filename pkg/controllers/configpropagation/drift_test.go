@@ -47,8 +47,9 @@ func TestDriftOverwriteUpdates(t *testing.T) {
 	// Source hash will be for {k:v}
 	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{core.HashAnnotation: "different"}, tgtLbl: map[string]string{core.ManagedLabel: "true"}}
 	r := NewReconciler(f)
+	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, ConflictPolicy: core.ConflictOverwrite, Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate}}
-	if _, err := r.Reconcile(s); err != nil {
+	if _, err := r.Reconcile(key, s); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.upserts != 1 {
@@ -59,8 +60,9 @@ func TestDriftOverwriteUpdates(t *testing.T) {
 func TestDriftSkipDoesNotUpdate(t *testing.T) {
 	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{core.HashAnnotation: "different"}, tgtLbl: map[string]string{core.ManagedLabel: "true"}}
 	r := NewReconciler(f)
+	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, ConflictPolicy: core.ConflictSkip, Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate}}
-	if _, err := r.Reconcile(s); err != nil {
+	if _, err := r.Reconcile(key, s); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.upserts != 0 {
@@ -72,9 +74,10 @@ func TestNoOpWhenHashesMatch(t *testing.T) {
 	// Compute the same hash by using same data and setting target hash afterwards via syncTargets path.
 	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{}, tgtLbl: map[string]string{core.ManagedLabel: "true"}}
 	r := NewReconciler(f)
+	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, ConflictPolicy: core.ConflictOverwrite, Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate}}
 	// First reconcile writes and sets hash
-	if _, err := r.Reconcile(s); err != nil {
+	if _, err := r.Reconcile(key, s); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.upserts != 1 {
@@ -83,7 +86,7 @@ func TestNoOpWhenHashesMatch(t *testing.T) {
 	// Simulate target now having matching hash by reusing same fake that returns found with same annotations set by previous call
 	// We approximate by setting tgtAnn to the source hash using core.HashData
 	f.tgtAnn[core.HashAnnotation] = core.HashData(map[string]string{"k": "v"})
-	if _, err := r.Reconcile(s); err != nil {
+	if _, err := r.Reconcile(key, s); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.upserts != 1 {
@@ -94,8 +97,9 @@ func TestNoOpWhenHashesMatch(t *testing.T) {
 func TestNonManagedTargetIsNotMutated(t *testing.T) {
 	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{"some": "annotation"}, tgtLbl: map[string]string{}}
 	r := NewReconciler(f)
+	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, ConflictPolicy: core.ConflictOverwrite, Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate}}
-	if _, err := r.Reconcile(s); err != nil {
+	if _, err := r.Reconcile(key, s); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.upserts != 0 {

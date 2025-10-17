@@ -14,3 +14,8 @@ stories:
     status: implemented
     implemented_at: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     notes: "Hash-based drift detection with overwrite/skip policies and non-managed target guard."
+  - id: rollout_strategies
+    path: plans/stories/rollout_strategies.md
+    status: implemented
+    implemented_at: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    notes: "Rolling rollout planner with batch tracking, status reporting, and tests."
