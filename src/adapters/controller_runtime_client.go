@@ -6,12 +6,13 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"codex/src/core"
+	"configpropagation/src/core"
 )
 
 type controllerRuntimeClient struct {
@@ -137,7 +138,7 @@ func (c *controllerRuntimeClient) ListManagedTargetNamespaces(source string, nam
 
 func (c *controllerRuntimeClient) DeleteConfigMap(namespace, name string) error {
 	ctx := context.Background()
-	cm := corev1.ConfigMap{Namespace: namespace, Name: name}
+	cm := corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
 	return client.IgnoreNotFound(c.client.Delete(ctx, &cm))
 }
 

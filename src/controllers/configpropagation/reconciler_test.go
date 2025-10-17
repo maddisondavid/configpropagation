@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
-	"codex/src/adapters"
-	"codex/src/core"
+	"configpropagation/src/adapters"
+	"configpropagation/src/core"
 )
 
 type fakeClient struct {
