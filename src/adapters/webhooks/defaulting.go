@@ -1,7 +1,7 @@
 package webhooks
 
 import (
-	core "codex/src/core"
+	core "configpropagation/src/core"
 )
 
 // DefaultConfigPropagation applies server-side style defaults to the incoming

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sort"
 
-	"codex/src/adapters"
-	"codex/src/core"
+	"configpropagation/src/adapters"
+	"configpropagation/src/core"
 )
 
 // Key identifies a ConfigPropagation by namespace/name.

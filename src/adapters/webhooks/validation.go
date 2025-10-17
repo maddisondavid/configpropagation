@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	core "codex/src/core"
+	core "configpropagation/src/core"
 )
 
 const (
