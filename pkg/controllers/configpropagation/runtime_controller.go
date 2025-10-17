@@ -12,9 +12,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"configpropagation/src/adapters"
-	configv1alpha1 "configpropagation/src/api/v1alpha1"
-	"configpropagation/src/core"
+	"configpropagation/pkg/adapters"
+	configv1alpha1 "configpropagation/pkg/api/v1alpha1"
+	"configpropagation/pkg/core"
 )
 
 // ConfigPropagationController reconciles ConfigPropagation resources with a controller-runtime manager.

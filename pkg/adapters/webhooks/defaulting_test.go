@@ -3,7 +3,7 @@ package webhooks
 import (
 	"testing"
 
-	core "configpropagation/src/core"
+	core "configpropagation/pkg/core"
 )
 
 func TestDefaultConfigPropagation(t *testing.T) {

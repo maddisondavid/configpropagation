@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"configpropagation/src/adapters"
-	"configpropagation/src/core"
+	"configpropagation/pkg/adapters"
+	"configpropagation/pkg/core"
 )
 
 type fakeClientSync struct {

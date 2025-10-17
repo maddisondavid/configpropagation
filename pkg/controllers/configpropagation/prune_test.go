@@ -1,8 +1,8 @@
 package configpropagation
 
 import (
-	"configpropagation/src/adapters"
-	core "configpropagation/src/core"
+	"configpropagation/pkg/adapters"
+	core "configpropagation/pkg/core"
 	"reflect"
 	"testing"
 )

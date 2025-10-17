@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	core "configpropagation/src/core"
+	core "configpropagation/pkg/core"
 )
 
 const (

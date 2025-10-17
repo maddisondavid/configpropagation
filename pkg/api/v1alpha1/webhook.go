@@ -10,7 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	"configpropagation/src/core"
+	"configpropagation/pkg/core"
 )
 
 var _ webhook.Defaulter = &ConfigPropagation{}
