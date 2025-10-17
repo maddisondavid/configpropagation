@@ -6,23 +6,27 @@ import (
 )
 
 func TestHashDataDeterministicAndOrderIndependent(t *testing.T) {
-	m1 := map[string]string{"a": "1", "b": "2", "c": "3"}
-	m2 := map[string]string{"c": "3", "b": "2", "a": "1"}
-	h1 := core.HashData(m1)
-	h2 := core.HashData(m2)
-	if h1 == "" {
+	firstDataSet := map[string]string{"a": "1", "b": "2", "c": "3"}
+	secondDataSet := map[string]string{"c": "3", "b": "2", "a": "1"}
+
+	firstHash := core.HashData(firstDataSet)
+	secondHash := core.HashData(secondDataSet)
+
+	if firstHash == "" {
 		t.Fatalf("hash should not be empty for non-empty data")
 	}
-	if h1 != h2 {
-		t.Fatalf("hash must be order independent: %s vs %s", h1, h2)
+
+	if firstHash != secondHash {
+		t.Fatalf("hash must be order independent: %s vs %s", firstHash, secondHash)
 	}
 }
 
 func TestHashDataEmpty(t *testing.T) {
-	if got := core.HashData(nil); got != "" {
-		t.Fatalf("expected empty hash for nil, got %q", got)
+	if hashValue := core.HashData(nil); hashValue != "" {
+		t.Fatalf("expected empty hash for nil, got %q", hashValue)
 	}
-	if got := core.HashData(map[string]string{}); got != "" {
-		t.Fatalf("expected empty hash for empty, got %q", got)
+
+	if hashValue := core.HashData(map[string]string{}); hashValue != "" {
+		t.Fatalf("expected empty hash for empty, got %q", hashValue)
 	}
 }

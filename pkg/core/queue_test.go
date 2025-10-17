@@ -6,23 +6,29 @@ import (
 )
 
 func TestWorkQueueFIFOAndDedupe(t *testing.T) {
-	q := core.NewWorkQueue[string]()
-	if q.Len() != 0 {
-		t.Fatalf("expected len 0, got %d", q.Len())
+	queue := core.NewWorkQueue[string]()
+
+	if queue.Len() != 0 {
+		t.Fatalf("expected len 0, got %d", queue.Len())
 	}
-	q.Add("a")
-	q.Add("b")
-	q.Add("a") // duplicate should be ignored
-	if q.Len() != 2 {
-		t.Fatalf("expected len 2, got %d", q.Len())
+
+	queue.Add("a")
+	queue.Add("b")
+	queue.Add("a") // duplicate should be ignored
+
+	if queue.Len() != 2 {
+		t.Fatalf("expected len 2, got %d", queue.Len())
 	}
-	if v, ok := q.Get(); !ok || v != "a" {
-		t.Fatalf("expected first 'a', got %v %v", v, ok)
+
+	if value, exists := queue.Get(); !exists || value != "a" {
+		t.Fatalf("expected first 'a', got %v %v", value, exists)
 	}
-	if v, ok := q.Get(); !ok || v != "b" {
-		t.Fatalf("expected second 'b', got %v %v", v, ok)
+
+	if value, exists := queue.Get(); !exists || value != "b" {
+		t.Fatalf("expected second 'b', got %v %v", value, exists)
 	}
-	if _, ok := q.Get(); ok {
+
+	if _, exists := queue.Get(); exists {
 		t.Fatalf("expected empty queue")
 	}
 }

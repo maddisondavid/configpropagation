@@ -17,7 +17,7 @@ type RolloutResult struct {
 
 // RolloutPlanner tracks per-object rollout progress for rolling strategies.
 type RolloutPlanner struct {
-	mu     sync.Mutex
+	mutex  sync.Mutex
 	states map[NamespacedName]*rolloutState
 }
 
@@ -33,85 +33,105 @@ func NewRolloutPlanner() *RolloutPlanner {
 
 // Plan determines the next batch of namespaces to update given the desired targets and strategy.
 // It returns the namespaces to process now and the count of namespaces already completed prior to this plan.
-func (p *RolloutPlanner) Plan(id NamespacedName, desiredHash, strategy string, batchSize int32, targets []string) ([]string, int) {
+func (planner *RolloutPlanner) Plan(identifier NamespacedName, desiredHash, strategy string, batchSize int32, targets []string) ([]string, int) {
 	if strategy == StrategyImmediate {
 		return append([]string(nil), targets...), len(targets)
 	}
+
 	if batchSize < 1 {
 		batchSize = 1
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
 
-	st := p.ensureStateLocked(id, desiredHash)
+	planner.mutex.Lock()
+	defer planner.mutex.Unlock()
 
-	allowed := make(map[string]struct{}, len(targets))
-	for _, ns := range targets {
-		allowed[ns] = struct{}{}
+	state := planner.ensureStateLocked(identifier, desiredHash)
+
+	allowedTargets := make(map[string]struct{}, len(targets))
+
+	for _, namespace := range targets {
+		allowedTargets[namespace] = struct{}{}
 	}
+
 	// Drop completed entries that are no longer selected so future plans include them if reselected.
-	for ns := range st.completed {
-		if _, ok := allowed[ns]; !ok {
-			delete(st.completed, ns)
+	for namespace := range state.completed {
+		if _, exists := allowedTargets[namespace]; !exists {
+			delete(state.completed, namespace)
 		}
 	}
 
-	planned := make([]string, 0, min(int(batchSize), len(targets)))
-	for _, ns := range targets {
-		if _, done := st.completed[ns]; done {
+	plannedTargets := make([]string, 0, min(int(batchSize), len(targets)))
+
+	for _, namespace := range targets {
+		if _, alreadyCompleted := state.completed[namespace]; alreadyCompleted {
 			continue
 		}
-		planned = append(planned, ns)
-		if int32(len(planned)) >= batchSize {
+
+		plannedTargets = append(plannedTargets, namespace)
+
+		if int32(len(plannedTargets)) >= batchSize {
 			break
 		}
 	}
-	return planned, len(st.completed)
+
+	return plannedTargets, len(state.completed)
 }
 
 // MarkCompleted records the provided namespaces as completed for the object and returns the updated completion count.
-func (p *RolloutPlanner) MarkCompleted(id NamespacedName, desiredHash string, namespaces []string) int {
+func (planner *RolloutPlanner) MarkCompleted(identifier NamespacedName, desiredHash string, namespaces []string) int {
 	if len(namespaces) == 0 {
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		if st, ok := p.states[id]; ok && st.hash == desiredHash {
-			return len(st.completed)
+		planner.mutex.Lock()
+		defer planner.mutex.Unlock()
+
+		if state, exists := planner.states[identifier]; exists && state.hash == desiredHash {
+			return len(state.completed)
 		}
+
 		return 0
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	st := p.ensureStateLocked(id, desiredHash)
-	for _, ns := range namespaces {
-		st.completed[ns] = struct{}{}
+
+	planner.mutex.Lock()
+	defer planner.mutex.Unlock()
+
+	state := planner.ensureStateLocked(identifier, desiredHash)
+
+	for _, namespace := range namespaces {
+		state.completed[namespace] = struct{}{}
 	}
-	return len(st.completed)
+
+	return len(state.completed)
 }
 
 // Forget removes any stored rollout state for the provided object.
-func (p *RolloutPlanner) Forget(id NamespacedName) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.states, id)
+func (planner *RolloutPlanner) Forget(identifier NamespacedName) {
+	planner.mutex.Lock()
+	defer planner.mutex.Unlock()
+
+	delete(planner.states, identifier)
 }
 
-func (p *RolloutPlanner) ensureStateLocked(id NamespacedName, desiredHash string) *rolloutState {
-	st, ok := p.states[id]
-	if !ok {
-		st = &rolloutState{hash: desiredHash, completed: map[string]struct{}{}}
-		p.states[id] = st
-		return st
+func (planner *RolloutPlanner) ensureStateLocked(identifier NamespacedName, desiredHash string) *rolloutState {
+	state, exists := planner.states[identifier]
+
+	if !exists {
+		state = &rolloutState{hash: desiredHash, completed: map[string]struct{}{}}
+		planner.states[identifier] = state
+
+		return state
 	}
-	if st.hash != desiredHash {
-		st.hash = desiredHash
-		st.completed = map[string]struct{}{}
+
+	if state.hash != desiredHash {
+		state.hash = desiredHash
+		state.completed = map[string]struct{}{}
 	}
-	return st
+
+	return state
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+func min(firstValue, secondValue int) int {
+	if firstValue < secondValue {
+		return firstValue
 	}
-	return b
+
+	return secondValue
 }
