@@ -22,14 +22,18 @@ type Reconciler struct {
 }
 
 // OnCRChange enqueues a reconcile when the CR changes.
-func (r *Reconciler) OnCRChange(ns, name string) { r.queue.Add(Key{Namespace: ns, Name: name}) }
+func (r *Reconciler) OnCRChange(namespace, name string) {
+	r.queue.Add(Key{Namespace: namespace, Name: name})
+}
 
 // OnSourceChange enqueues a reconcile when the source ConfigMap changes.
-func (r *Reconciler) OnSourceChange(ns, name string) { r.queue.Add(Key{Namespace: ns, Name: name}) }
+func (r *Reconciler) OnSourceChange(namespace, name string) {
+	r.queue.Add(Key{Namespace: namespace, Name: name})
+}
 
 // OnNamespaceLabelChange enqueues a reconcile for selection changes.
-func (r *Reconciler) OnNamespaceLabelChange(ns, name string) {
-	r.queue.Add(Key{Namespace: ns, Name: name})
+func (r *Reconciler) OnNamespaceLabelChange(namespace, name string) {
+	r.queue.Add(Key{Namespace: namespace, Name: name})
 }
 
 func NewReconciler(client adapters.KubeClient) *Reconciler {
@@ -54,41 +58,49 @@ func (r *Reconciler) Reconcile(key Key, spec *core.ConfigPropagationSpec) (core.
 
 // Internal implementation separated for testability and full coverage.
 func reconcileImpl(client adapters.KubeClient, planner *core.RolloutPlanner, key Key, spec *core.ConfigPropagationSpec) (core.RolloutResult, error) {
-	srcData, err := client.GetSourceConfigMap(spec.SourceRef.Namespace, spec.SourceRef.Name)
+	sourceConfigData, err := client.GetSourceConfigMap(spec.SourceRef.Namespace, spec.SourceRef.Name)
 	if err != nil {
 		return core.RolloutResult{}, fmt.Errorf("get source: %w", err)
 	}
-	effective := computeEffective(srcData, spec.DataKeys)
-	targets, err := listTargets(client, spec.NamespaceSelector)
+
+	effectiveData := computeEffective(sourceConfigData, spec.DataKeys)
+
+	targetNamespaces, err := listTargets(client, spec.NamespaceSelector)
 	if err != nil {
 		return core.RolloutResult{}, fmt.Errorf("list namespaces: %w", err)
 	}
-	sort.Strings(targets)
-	batch := int32(5)
+	sort.Strings(targetNamespaces)
+
+	batchSize := int32(5)
 	if spec.Strategy.BatchSize != nil {
-		batch = *spec.Strategy.BatchSize
+		batchSize = *spec.Strategy.BatchSize
 	}
-	hash := core.HashData(effective)
-	planned, completedBefore := planTargets(planner, key, hash, targets, spec.Strategy.Type, batch)
-	if err := syncTargets(client, planned, spec.SourceRef.Name, effective, hash, spec.SourceRef.Namespace, spec.ConflictPolicy); err != nil {
+
+	rolloutHash := core.HashData(effectiveData)
+
+	plannedNamespaces, completedBefore := planTargets(planner, key, rolloutHash, targetNamespaces, spec.Strategy.Type, batchSize)
+
+	err = syncTargets(client, plannedNamespaces, spec.SourceRef.Name, effectiveData, rolloutHash, spec.SourceRef.Namespace, spec.ConflictPolicy)
+	if err != nil {
 		return core.RolloutResult{}, err
 	}
-	completed := completedBefore
-	if spec.Strategy.Type == core.StrategyRolling && len(planned) > 0 {
-		completed = planner.MarkCompleted(core.NamespacedName{Namespace: key.Namespace, Name: key.Name}, hash, planned)
+
+	completedTargetCount := completedBefore
+	if spec.Strategy.Type == core.StrategyRolling && len(plannedNamespaces) > 0 {
+		completedTargetCount = planner.MarkCompleted(core.NamespacedName{Namespace: key.Namespace, Name: key.Name}, rolloutHash, plannedNamespaces)
 	}
 	if spec.Strategy.Type == core.StrategyImmediate {
 		planner.Forget(core.NamespacedName{Namespace: key.Namespace, Name: key.Name})
-		completed = len(targets)
+		completedTargetCount = len(targetNamespaces)
 	}
 	// Cleanup deselected namespaces per prune policy
-	if err := cleanupDeselected(client, spec, targets); err != nil {
+	if err := cleanupDeselected(client, spec, targetNamespaces); err != nil {
 		return core.RolloutResult{}, err
 	}
 	result := core.RolloutResult{
-		Planned:        planned,
-		TotalTargets:   len(targets),
-		CompletedCount: completed,
+		Planned:        plannedNamespaces,
+		TotalTargets:   len(targetNamespaces),
+		CompletedCount: completedTargetCount,
 	}
 	return result, nil
 }
@@ -100,99 +112,117 @@ func nilIfEmpty[K comparable, V any](m map[K]V) map[K]V {
 	return m
 }
 
-func computeEffective(src map[string]string, keys []string) map[string]string {
-	if src == nil {
-		src = map[string]string{}
+func computeEffective(sourceData map[string]string, selectedKeys []string) map[string]string {
+	if sourceData == nil {
+		sourceData = map[string]string{}
 	}
-	out := map[string]string{}
-	if len(keys) == 0 {
-		for k, v := range src {
-			out[k] = v
+	effective := map[string]string{}
+
+	if len(selectedKeys) == 0 {
+		for key, value := range sourceData {
+			effective[key] = value
 		}
-		return out
+		return effective
 	}
-	for _, k := range keys {
-		if v, ok := src[k]; ok {
-			out[k] = v
+
+	for _, key := range selectedKeys {
+		value, exists := sourceData[key]
+		if exists {
+			effective[key] = value
 		}
 	}
-	return out
+	return effective
 }
 
-func listTargets(c adapters.KubeClient, sel *core.LabelSelector) ([]string, error) {
-	var exprs []adapters.LabelSelectorRequirement
-	for _, e := range sel.MatchExpressions {
-		exprs = append(exprs, adapters.LabelSelectorRequirement{Key: e.Key, Operator: e.Operator, Values: e.Values})
+func listTargets(client adapters.KubeClient, selector *core.LabelSelector) ([]string, error) {
+	var selectorRequirements []adapters.LabelSelectorRequirement
+
+	for _, expression := range selector.MatchExpressions {
+		requirement := adapters.LabelSelectorRequirement{Key: expression.Key, Operator: expression.Operator, Values: expression.Values}
+		selectorRequirements = append(selectorRequirements, requirement)
 	}
-	return c.ListNamespacesBySelector(nilIfEmpty(sel.MatchLabels), exprs)
+
+	return client.ListNamespacesBySelector(nilIfEmpty(selector.MatchLabels), selectorRequirements)
 }
 
-func syncTargets(c adapters.KubeClient, planned []string, name string, effective map[string]string, hash string, srcNS string, conflictPolicy string) error {
+func syncTargets(client adapters.KubeClient, plannedNamespaces []string, configMapName string, effectiveData map[string]string, contentHash string, sourceNamespace string, conflictPolicy string) error {
 	labels := map[string]string{core.ManagedLabel: "true"}
-	source := fmt.Sprintf("%s/%s", srcNS, name)
+	sourceConfigMap := fmt.Sprintf("%s/%s", sourceNamespace, configMapName)
+
 	annotations := map[string]string{
-		core.SourceAnnotation: source,
-		core.HashAnnotation:   hash,
+		core.SourceAnnotation: sourceConfigMap,
+		core.HashAnnotation:   contentHash,
 	}
-	for _, ns := range planned {
-		_, tgtLabels, tgtAnn, found, err := c.GetTargetConfigMap(ns, name)
+
+	for _, targetNamespace := range plannedNamespaces {
+		_, targetLabels, targetAnnotations, targetFound, err := client.GetTargetConfigMap(targetNamespace, configMapName)
 		if err != nil {
-			return fmt.Errorf("get target %s/%s: %w", ns, name, err)
+			return fmt.Errorf("get target %s/%s: %w", targetNamespace, configMapName, err)
 		}
-		if found {
-			if tgtLabels[core.ManagedLabel] != "true" && tgtAnn[core.SourceAnnotation] != source {
+
+		if targetFound {
+			if targetLabels[core.ManagedLabel] != "true" && targetAnnotations[core.SourceAnnotation] != sourceConfigMap {
 				continue
 			}
-			if tgtAnn[core.HashAnnotation] == hash {
+
+			if targetAnnotations[core.HashAnnotation] == contentHash {
 				continue
 			}
+
 			if conflictPolicy == core.ConflictSkip {
 				continue
 			}
 		}
-		if err := c.UpsertConfigMap(ns, name, effective, labels, annotations); err != nil {
-			return fmt.Errorf("upsert %s/%s: %w", ns, name, err)
+
+		if err := client.UpsertConfigMap(targetNamespace, configMapName, effectiveData, labels, annotations); err != nil {
+			return fmt.Errorf("upsert %s/%s: %w", targetNamespace, configMapName, err)
 		}
 	}
 	return nil
 }
 
-func planTargets(planner *core.RolloutPlanner, key Key, hash string, all []string, strategy string, batchSize int32) ([]string, int) {
+func planTargets(planner *core.RolloutPlanner, key Key, rolloutHash string, candidateNamespaces []string, strategy string, batchSize int32) ([]string, int) {
 	id := core.NamespacedName{Namespace: key.Namespace, Name: key.Name}
-	return planner.Plan(id, hash, strategy, batchSize, all)
+	return planner.Plan(id, rolloutHash, strategy, batchSize, candidateNamespaces)
 }
 
 // cleanupDeselected removes or detaches targets in namespaces that were previously managed
 // but are no longer selected by the label selector.
-func cleanupDeselected(c adapters.KubeClient, spec *core.ConfigPropagationSpec, currentlySelected []string) error {
-	prune := true
+func cleanupDeselected(client adapters.KubeClient, spec *core.ConfigPropagationSpec, currentlySelectedNamespaces []string) error {
+	shouldPrune := true
 	if spec.Prune != nil {
-		prune = *spec.Prune
+		shouldPrune = *spec.Prune
 	}
-	source := fmt.Sprintf("%s/%s", spec.SourceRef.Namespace, spec.SourceRef.Name)
-	managed, err := c.ListManagedTargetNamespaces(source, spec.SourceRef.Name)
+
+	sourceIdentifier := fmt.Sprintf("%s/%s", spec.SourceRef.Namespace, spec.SourceRef.Name)
+
+	managedNamespaces, err := client.ListManagedTargetNamespaces(sourceIdentifier, spec.SourceRef.Name)
 	if err != nil {
 		return fmt.Errorf("list managed: %w", err)
 	}
 	// Build set of selected
-	selSet := map[string]struct{}{}
-	for _, ns := range currentlySelected {
-		selSet[ns] = struct{}{}
+	selectedNamespaceSet := map[string]struct{}{}
+
+	for _, namespace := range currentlySelectedNamespaces {
+		selectedNamespaceSet[namespace] = struct{}{}
 	}
-	for _, ns := range managed {
-		if _, ok := selSet[ns]; ok {
+
+	for _, namespace := range managedNamespaces {
+		if _, stillSelected := selectedNamespaceSet[namespace]; stillSelected {
 			continue
 		}
-		if prune {
-			if err := c.DeleteConfigMap(ns, spec.SourceRef.Name); err != nil {
-				return fmt.Errorf("delete %s/%s: %w", ns, spec.SourceRef.Name, err)
+
+		if shouldPrune {
+			if err := client.DeleteConfigMap(namespace, spec.SourceRef.Name); err != nil {
+				return fmt.Errorf("delete %s/%s: %w", namespace, spec.SourceRef.Name, err)
 			}
 		} else {
 			// Detach: remove managed markers
 			labels := map[string]string{}
 			annotations := map[string]string{}
-			if err := c.UpdateConfigMapMetadata(ns, spec.SourceRef.Name, labels, annotations); err != nil {
-				return fmt.Errorf("detach %s/%s: %w", ns, spec.SourceRef.Name, err)
+
+			if err := client.UpdateConfigMapMetadata(namespace, spec.SourceRef.Name, labels, annotations); err != nil {
+				return fmt.Errorf("detach %s/%s: %w", namespace, spec.SourceRef.Name, err)
 			}
 		}
 	}

@@ -20,62 +20,68 @@ import (
 // ConfigPropagationController reconciles ConfigPropagation resources with a controller-runtime manager.
 type ConfigPropagationController struct {
 	client.Client
-	log        logr.Logger
+	logger     logr.Logger
 	reconciler *Reconciler
 }
 
 var _ reconcile.Reconciler = &ConfigPropagationController{}
 
 // NewController constructs a ConfigPropagationController wired with the manager's client.
-func NewController(mgr ctrl.Manager) *ConfigPropagationController {
-	kube := adapters.NewControllerRuntimeClient(mgr.GetClient())
+func NewController(manager ctrl.Manager) *ConfigPropagationController {
+	kubeClient := adapters.NewControllerRuntimeClient(manager.GetClient())
 	return &ConfigPropagationController{
-		Client:     mgr.GetClient(),
-		log:        ctrl.Log.WithName("controllers").WithName("ConfigPropagation"),
-		reconciler: NewReconciler(kube),
+		Client:     manager.GetClient(),
+		logger:     ctrl.Log.WithName("controllers").WithName("ConfigPropagation"),
+		reconciler: NewReconciler(kubeClient),
 	}
 }
 
 // Reconcile runs the core reconciliation logic for a ConfigPropagation instance.
 func (c *ConfigPropagationController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := c.log.WithValues("configpropagation", req.NamespacedName)
-	var cp configv1alpha1.ConfigPropagation
-	if err := c.Get(ctx, req.NamespacedName, &cp); err != nil {
+	logger := c.logger.WithValues("configpropagation", req.NamespacedName)
+
+	var configPropagation configv1alpha1.ConfigPropagation
+
+	if err := c.Get(ctx, req.NamespacedName, &configPropagation); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
 
-	if cp.ObjectMeta.DeletionTimestamp.IsZero() {
-		if !controllerutil.ContainsFinalizer(&cp, core.Finalizer) {
-			controllerutil.AddFinalizer(&cp, core.Finalizer)
-			if err := c.Update(ctx, &cp); err != nil {
+	if configPropagation.ObjectMeta.DeletionTimestamp.IsZero() {
+		if !controllerutil.ContainsFinalizer(&configPropagation, core.Finalizer) {
+			controllerutil.AddFinalizer(&configPropagation, core.Finalizer)
+
+			if err := c.Update(ctx, &configPropagation); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
 	} else {
-		if controllerutil.ContainsFinalizer(&cp, core.Finalizer) {
-			if err := c.reconciler.Finalize(&cp.Spec); err != nil {
+		if controllerutil.ContainsFinalizer(&configPropagation, core.Finalizer) {
+			if err := c.reconciler.Finalize(&configPropagation.Spec); err != nil {
 				return ctrl.Result{}, err
 			}
-			controllerutil.RemoveFinalizer(&cp, core.Finalizer)
-			if err := c.Update(ctx, &cp); err != nil {
+			controllerutil.RemoveFinalizer(&configPropagation, core.Finalizer)
+
+			if err := c.Update(ctx, &configPropagation); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
 		return ctrl.Result{}, nil
 	}
 
-	result, err := c.reconciler.Reconcile(Key{Namespace: req.Namespace, Name: req.Name}, &cp.Spec)
+	result, err := c.reconciler.Reconcile(Key{Namespace: req.Namespace, Name: req.Name}, &configPropagation.Spec)
 	if err != nil {
-		log.Error(err, "reconciliation failed")
+		logger.Error(err, "reconciliation failed")
 		return ctrl.Result{}, err
 	}
 
-	statusPatch := client.MergeFrom(cp.DeepCopy())
-	cp.ApplyRolloutStatus(result)
-	if err := c.Status().Patch(ctx, &cp, statusPatch); err != nil {
+	statusPatch := client.MergeFrom(configPropagation.DeepCopy())
+
+	configPropagation.ApplyRolloutStatus(result)
+
+	if err := c.Status().Patch(ctx, &configPropagation, statusPatch); err != nil {
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
 		}
@@ -85,9 +91,9 @@ func (c *ConfigPropagationController) Reconcile(ctx context.Context, req ctrl.Re
 }
 
 // SetupWithManager registers the controller with the provided manager.
-func SetupWithManager(mgr ctrl.Manager) error {
-	reconciler := NewController(mgr)
-	return ctrl.NewControllerManagedBy(mgr).
+func SetupWithManager(manager ctrl.Manager) error {
+	reconciler := NewController(manager)
+	return ctrl.NewControllerManagedBy(manager).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
 		For(&configv1alpha1.ConfigPropagation{}).
 		Complete(reconciler)
