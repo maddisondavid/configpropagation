@@ -16,12 +16,9 @@ type Key struct {
 
 // Reconciler wires the kube client and a simple work queue.
 type Reconciler struct {
-	client adapters.KubeClient
-	queue  *core.WorkQueue[Key]
-}
-
-func NewReconciler(client adapters.KubeClient) *Reconciler {
-	return &Reconciler{client: client, queue: core.NewWorkQueue[Key]()}
+	client  adapters.KubeClient
+	queue   *core.WorkQueue[Key]
+	planner *core.RolloutPlanner
 }
 
 // OnCRChange enqueues a reconcile when the CR changes.
@@ -35,43 +32,65 @@ func (r *Reconciler) OnNamespaceLabelChange(ns, name string) {
 	r.queue.Add(Key{Namespace: ns, Name: name})
 }
 
+func NewReconciler(client adapters.KubeClient) *Reconciler {
+	return &Reconciler{
+		client:  client,
+		queue:   core.NewWorkQueue[Key](),
+		planner: core.NewRolloutPlanner(),
+	}
+}
+
 // Reconcile performs one loop for the next item in the queue.
-func (r *Reconciler) Reconcile(spec *core.ConfigPropagationSpec) ([]string, error) {
+func (r *Reconciler) Reconcile(key Key, spec *core.ConfigPropagationSpec) (core.RolloutResult, error) {
 	if spec == nil {
-		return nil, fmt.Errorf("spec is nil")
+		return core.RolloutResult{}, fmt.Errorf("spec is nil")
 	}
 	core.DefaultSpec(spec)
 	if err := core.ValidateSpec(spec); err != nil {
-		return nil, err
+		return core.RolloutResult{}, err
 	}
-	return reconcileImpl(r.client, spec)
+	return reconcileImpl(r.client, r.planner, key, spec)
 }
 
 // Internal implementation separated for testability and full coverage.
-func reconcileImpl(client adapters.KubeClient, spec *core.ConfigPropagationSpec) ([]string, error) {
+func reconcileImpl(client adapters.KubeClient, planner *core.RolloutPlanner, key Key, spec *core.ConfigPropagationSpec) (core.RolloutResult, error) {
 	srcData, err := client.GetSourceConfigMap(spec.SourceRef.Namespace, spec.SourceRef.Name)
 	if err != nil {
-		return nil, fmt.Errorf("get source: %w", err)
+		return core.RolloutResult{}, fmt.Errorf("get source: %w", err)
 	}
 	effective := computeEffective(srcData, spec.DataKeys)
 	targets, err := listTargets(client, spec.NamespaceSelector)
 	if err != nil {
-		return nil, fmt.Errorf("list namespaces: %w", err)
+		return core.RolloutResult{}, fmt.Errorf("list namespaces: %w", err)
 	}
 	sort.Strings(targets)
 	batch := int32(5)
 	if spec.Strategy.BatchSize != nil {
 		batch = *spec.Strategy.BatchSize
 	}
-	planned := planTargets(targets, spec.Strategy.Type, batch)
-	if err := syncTargets(client, planned, spec.SourceRef.Name, effective, spec.SourceRef.Namespace, spec.ConflictPolicy); err != nil {
-		return nil, err
+	hash := core.HashData(effective)
+	planned, completedBefore := planTargets(planner, key, hash, targets, spec.Strategy.Type, batch)
+	if err := syncTargets(client, planned, spec.SourceRef.Name, effective, hash, spec.SourceRef.Namespace, spec.ConflictPolicy); err != nil {
+		return core.RolloutResult{}, err
+	}
+	completed := completedBefore
+	if spec.Strategy.Type == core.StrategyRolling && len(planned) > 0 {
+		completed = planner.MarkCompleted(core.NamespacedName{Namespace: key.Namespace, Name: key.Name}, hash, planned)
+	}
+	if spec.Strategy.Type == core.StrategyImmediate {
+		planner.Forget(core.NamespacedName{Namespace: key.Namespace, Name: key.Name})
+		completed = len(targets)
 	}
 	// Cleanup deselected namespaces per prune policy
 	if err := cleanupDeselected(client, spec, targets); err != nil {
-		return nil, err
+		return core.RolloutResult{}, err
 	}
-	return planned, nil
+	result := core.RolloutResult{
+		Planned:        planned,
+		TotalTargets:   len(targets),
+		CompletedCount: completed,
+	}
+	return result, nil
 }
 
 func nilIfEmpty[K comparable, V any](m map[K]V) map[K]V {
@@ -108,8 +127,7 @@ func listTargets(c adapters.KubeClient, sel *core.LabelSelector) ([]string, erro
 	return c.ListNamespacesBySelector(nilIfEmpty(sel.MatchLabels), exprs)
 }
 
-func syncTargets(c adapters.KubeClient, planned []string, name string, effective map[string]string, srcNS string, conflictPolicy string) error {
-	hash := core.HashData(effective)
+func syncTargets(c adapters.KubeClient, planned []string, name string, effective map[string]string, hash string, srcNS string, conflictPolicy string) error {
 	labels := map[string]string{core.ManagedLabel: "true"}
 	source := fmt.Sprintf("%s/%s", srcNS, name)
 	annotations := map[string]string{
@@ -139,17 +157,9 @@ func syncTargets(c adapters.KubeClient, planned []string, name string, effective
 	return nil
 }
 
-func planTargets(all []string, strategy string, batchSize int32) []string {
-	if strategy == core.StrategyImmediate {
-		return append([]string(nil), all...)
-	}
-	if batchSize < 1 {
-		batchSize = 1
-	}
-	if int(batchSize) >= len(all) {
-		return append([]string(nil), all...)
-	}
-	return append([]string(nil), all[:batchSize]...)
+func planTargets(planner *core.RolloutPlanner, key Key, hash string, all []string, strategy string, batchSize int32) ([]string, int) {
+	id := core.NamespacedName{Namespace: key.Namespace, Name: key.Name}
+	return planner.Plan(id, hash, strategy, batchSize, all)
 }
 
 // cleanupDeselected removes or detaches targets in namespaces that were previously managed

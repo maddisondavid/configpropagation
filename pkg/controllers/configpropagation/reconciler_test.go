@@ -50,19 +50,23 @@ func TestReconcilerPlanImmediate(t *testing.T) {
 		namespaces: []string{"ns1", "ns2", "ns3"},
 	}
 	r := NewReconciler(fc)
+	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{
 		SourceRef:         core.ObjectRef{Namespace: "src", Name: "cfg"},
 		NamespaceSelector: &core.LabelSelector{},
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyImmediate},
 		DataKeys:          []string{"a", "c"},
 	}
-	got, err := r.Reconcile(s)
+	got, err := r.Reconcile(key, s)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
 	want := []string{"ns1", "ns2", "ns3"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("want %v got %v", want, got)
+	if !reflect.DeepEqual(got.Planned, want) {
+		t.Fatalf("want %v got %v", want, got.Planned)
+	}
+	if got.CompletedCount != len(want) || got.TotalTargets != len(want) {
+		t.Fatalf("expected all targets completed, got %+v", got)
 	}
 }
 
@@ -73,42 +77,60 @@ func TestReconcilerPlanRollingBatch(t *testing.T) {
 	}
 	r := NewReconciler(fc)
 	bs := int32(2)
+	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{
 		SourceRef:         core.ObjectRef{Namespace: "src", Name: "cfg"},
 		NamespaceSelector: &core.LabelSelector{},
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyRolling, BatchSize: &bs},
 	}
-	got, err := r.Reconcile(s)
+	got, err := r.Reconcile(key, s)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
 	want := []string{"a", "b"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("want %v got %v", want, got)
+	if !reflect.DeepEqual(got.Planned, want) {
+		t.Fatalf("want %v got %v", want, got.Planned)
+	}
+	if got.CompletedCount != len(want) {
+		t.Fatalf("expected completed count to equal batch size, got %+v", got)
+	}
+
+	// next reconcile should continue with remaining namespaces
+	got2, err := r.Reconcile(key, s)
+	if err != nil {
+		t.Fatalf("second reconcile error: %v", err)
+	}
+	want2 := []string{"c", "d"}
+	if !reflect.DeepEqual(got2.Planned, want2) {
+		t.Fatalf("want %v got %v", want2, got2.Planned)
+	}
+	if got2.CompletedCount != len(want)+len(want2) {
+		t.Fatalf("expected completed count to accumulate, got %+v", got2)
 	}
 }
 
 func TestPlanTargetsBranches(t *testing.T) {
-	// batch >= len(all) returns all
+	planner := core.NewRolloutPlanner()
+	key := core.NamespacedName{Namespace: "ns", Name: "cp"}
 	all := []string{"a", "b"}
-	got := planTargets(all, core.StrategyRolling, 5)
-	if !reflect.DeepEqual(got, all) {
-		t.Fatalf("expected all when batch >= len, got %v", got)
+	planned, completed := planner.Plan(key, "hash", core.StrategyRolling, 1, all)
+	if !reflect.DeepEqual(planned, []string{"a"}) || completed != 0 {
+		t.Fatalf("expected first element with empty completed, got planned=%v completed=%d", planned, completed)
 	}
-	// batch < len returns prefix
-	got = planTargets(all, core.StrategyRolling, 1)
-	if !reflect.DeepEqual(got, []string{"a"}) {
-		t.Fatalf("expected first element, got %v", got)
+	planner.MarkCompleted(key, "hash", planned)
+	planned, completed = planner.Plan(key, "hash", core.StrategyRolling, 2, all)
+	if !reflect.DeepEqual(planned, []string{"b"}) || completed != 1 {
+		t.Fatalf("expected second element with completed count 1, got planned=%v completed=%d", planned, completed)
 	}
-	// immediate returns all
-	got = planTargets(all, core.StrategyImmediate, 0)
-	if !reflect.DeepEqual(got, all) {
-		t.Fatalf("immediate should return all, got %v", got)
+	planner.MarkCompleted(key, "hash", planned)
+	planned, completed = planner.Plan(key, "hash", core.StrategyRolling, 2, all)
+	if len(planned) != 0 || completed != 2 {
+		t.Fatalf("expected no remaining targets, got planned=%v completed=%d", planned, completed)
 	}
-	// rolling with batchSize < 1 coerces to 1
-	got = planTargets(all, core.StrategyRolling, 0)
-	if !reflect.DeepEqual(got, []string{"a"}) {
-		t.Fatalf("rolling with 0 coerces to 1, got %v", got)
+	// Immediate returns all and treats them as completed
+	planned, completed = planner.Plan(key, "hash", core.StrategyImmediate, 0, all)
+	if !reflect.DeepEqual(planned, all) || completed != len(all) {
+		t.Fatalf("immediate strategy should plan all, got planned=%v completed=%d", planned, completed)
 	}
 }
 
@@ -131,12 +153,13 @@ func TestHelpersComputeEffectiveAndListTargetsAndSyncTargets(t *testing.T) {
 		t.Fatalf("listTargets failed: %v %v", got, err)
 	}
 	// syncTargets executes loop and returns nil
-	if err := syncTargets(fc, []string{"ns"}, "name", map[string]string{"k": "v"}, "src", core.ConflictOverwrite); err != nil {
+	hash := core.HashData(map[string]string{"k": "v"})
+	if err := syncTargets(fc, []string{"ns"}, "name", map[string]string{"k": "v"}, hash, "src", core.ConflictOverwrite); err != nil {
 		t.Fatalf("syncTargets error: %v", err)
 	}
 	// syncTargets error path
 	bu := &badUpsert{*fc}
-	if err := syncTargets(bu, []string{"ns"}, "name", map[string]string{"k": "v"}, "src", core.ConflictOverwrite); err == nil {
+	if err := syncTargets(bu, []string{"ns"}, "name", map[string]string{"k": "v"}, hash, "src", core.ConflictOverwrite); err == nil {
 		t.Fatalf("expected syncTargets to error on upsert")
 	}
 }
@@ -162,26 +185,26 @@ func (b *badUpsert) UpsertConfigMap(ns, name string, d map[string]string, l, a m
 func TestReconcileErrorPaths(t *testing.T) {
 	r := NewReconciler(&errClient{fakeClient{data: map[string]map[string]map[string]string{}, namespaces: []string{"n"}}})
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}}
-	if _, err := r.Reconcile(s); err == nil {
+	if _, err := r.Reconcile(Key{Namespace: "ns", Name: "cp"}, s); err == nil {
 		t.Fatalf("expected error from source get")
 	}
 
 	// Source ok, upsert fails
 	ec := &errClient{fakeClient{data: map[string]map[string]map[string]string{"s": {"n": {}}}, namespaces: []string{"n"}}}
 	r2 := NewReconciler(ec)
-	if _, err := r2.Reconcile(s); err == nil {
+	if _, err := r2.Reconcile(Key{Namespace: "ns", Name: "cp"}, s); err == nil {
 		t.Fatalf("expected upsert error")
 	}
 
 	// Namespace list fails
 	ec2 := &errClient{fakeClient{data: map[string]map[string]map[string]string{"s": {"n": {}}}, namespaces: []string{"n"}}}
 	r3 := NewReconciler(ec2)
-	if _, err := r3.Reconcile(s); err == nil {
+	if _, err := r3.Reconcile(Key{Namespace: "ns", Name: "cp"}, s); err == nil {
 		t.Fatalf("expected list namespaces error")
 	}
 
 	// Nil spec
-	if _, err := r2.Reconcile(nil); err == nil {
+	if _, err := r2.Reconcile(Key{Namespace: "ns", Name: "cp"}, nil); err == nil {
 		t.Fatalf("expected error for nil spec")
 	}
 }
@@ -190,7 +213,7 @@ func TestReconcileValidationFailure(t *testing.T) {
 	r := NewReconciler(&fakeClient{data: map[string]map[string]map[string]string{}, namespaces: []string{"n"}})
 	// Invalid: strategy type unrecognized
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Strategy: &core.UpdateStrategy{Type: "canary"}}
-	if _, err := r.Reconcile(s); err == nil {
+	if _, err := r.Reconcile(Key{Namespace: "ns", Name: "cp"}, s); err == nil {
 		t.Fatalf("expected validation error")
 	}
 }
@@ -200,7 +223,7 @@ func TestReconcileSuccessCoversImpl(t *testing.T) {
 	fc := &fakeClient{data: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, namespaces: []string{"ns"}}
 	r := NewReconciler(fc)
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate}}
-	if _, err := r.Reconcile(s); err != nil {
+	if _, err := r.Reconcile(Key{Namespace: "ns", Name: "cp"}, s); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -209,11 +232,11 @@ func TestReconcileNoTargetsNoUpserts(t *testing.T) {
 	fc := &fakeClient{data: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, namespaces: []string{}}
 	r := NewReconciler(fc)
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}}
-	planned, err := r.Reconcile(s)
+	planned, err := r.Reconcile(Key{Namespace: "ns", Name: "cp"}, s)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(planned) != 0 {
-		t.Fatalf("expected 0 planned, got %d", len(planned))
+	if len(planned.Planned) != 0 {
+		t.Fatalf("expected 0 planned, got %d", len(planned.Planned))
 	}
 }

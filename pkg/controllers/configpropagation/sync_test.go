@@ -96,19 +96,20 @@ func TestSyncCopiesFilteredDataAndSetsManagedMetadata(t *testing.T) {
 		},
 	}
 	r := NewReconciler(fc)
+	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{
 		SourceRef:         core.ObjectRef{Namespace: "src", Name: "cfg"},
 		NamespaceSelector: &core.LabelSelector{MatchLabels: map[string]string{"team": "a"}},
 		DataKeys:          []string{"a", "b"},
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyImmediate},
 	}
-	planned, err := r.Reconcile(s)
+	planned, err := r.Reconcile(key, s)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
 	// Expect two namespaces selected
-	if len(planned) != 2 {
-		t.Fatalf("expected 2 planned namespaces, got %d", len(planned))
+	if len(planned.Planned) != 2 {
+		t.Fatalf("expected 2 planned namespaces, got %d", len(planned.Planned))
 	}
 	// Verify upserts
 	if len(fc.upserts) != 2 {
@@ -148,17 +149,18 @@ func TestSyncWhenSourceMissingAndEvents(t *testing.T) {
 	r.OnSourceChange("ns", "name")
 	r.OnNamespaceLabelChange("ns", "name")
 
+	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{
 		SourceRef:         core.ObjectRef{Namespace: "src", Name: "cfg"},
 		NamespaceSelector: &core.LabelSelector{MatchLabels: map[string]string{"team": "x"}},
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyImmediate},
 	}
-	planned, err := r.Reconcile(s)
+	planned, err := r.Reconcile(key, s)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
-	if len(planned) != 1 {
-		t.Fatalf("expected 1 planned, got %d", len(planned))
+	if len(planned.Planned) != 1 {
+		t.Fatalf("expected 1 planned, got %d", len(planned.Planned))
 	}
 	if len(fc.upserts) != 1 {
 		t.Fatalf("expected 1 upsert, got %d", len(fc.upserts))
@@ -180,6 +182,7 @@ func TestSyncCopiesAllWhenNoDataKeysAndExpressionsProvided(t *testing.T) {
 		nsLabels: map[string]map[string]string{"ns": {"team": "z"}},
 	}
 	r := NewReconciler(fc)
+	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{
 		SourceRef: core.ObjectRef{Namespace: "src", Name: "cfg"},
 		NamespaceSelector: &core.LabelSelector{
@@ -188,12 +191,12 @@ func TestSyncCopiesAllWhenNoDataKeysAndExpressionsProvided(t *testing.T) {
 		},
 		Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate},
 	}
-	planned, err := r.Reconcile(s)
+	planned, err := r.Reconcile(key, s)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
-	if len(planned) != 1 {
-		t.Fatalf("expected 1 planned, got %d", len(planned))
+	if len(planned.Planned) != 1 {
+		t.Fatalf("expected 1 planned, got %d", len(planned.Planned))
 	}
 	u := fc.upserts[0]
 	if len(u.data) != 2 {
@@ -209,13 +212,14 @@ func TestSyncIgnoresMissingDataKeys(t *testing.T) {
 		nsLabels: map[string]map[string]string{"ns": {"team": "z"}},
 	}
 	r := NewReconciler(fc)
+	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{
 		SourceRef:         core.ObjectRef{Namespace: "src", Name: "cfg"},
 		NamespaceSelector: &core.LabelSelector{MatchLabels: map[string]string{"team": "z"}},
 		DataKeys:          []string{"missing", "only"},
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyImmediate},
 	}
-	_, err := r.Reconcile(s)
+	_, err := r.Reconcile(key, s)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}

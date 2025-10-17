@@ -67,14 +67,14 @@ func (c *ConfigPropagationController) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 
-	planned, err := c.reconciler.Reconcile(&cp.Spec)
+	result, err := c.reconciler.Reconcile(Key{Namespace: req.Namespace, Name: req.Name}, &cp.Spec)
 	if err != nil {
 		log.Error(err, "reconciliation failed")
 		return ctrl.Result{}, err
 	}
 
 	statusPatch := client.MergeFrom(cp.DeepCopy())
-	cp.ApplySuccessStatus(len(planned))
+	cp.ApplyRolloutStatus(result)
 	if err := c.Status().Patch(ctx, &cp, statusPatch); err != nil {
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil

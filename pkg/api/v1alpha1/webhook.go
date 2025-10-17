@@ -47,19 +47,31 @@ func (c *ConfigPropagation) ValidateUpdate(runtime.Object) (admission.Warnings, 
 // ValidateDelete implements webhook.Validator.
 func (c *ConfigPropagation) ValidateDelete() (admission.Warnings, error) { return nil, nil }
 
-// ApplySuccessStatus updates status fields after a successful reconcile.
-func (c *ConfigPropagation) ApplySuccessStatus(planned int) {
+// ApplyRolloutStatus updates status fields after a reconcile using rollout progress.
+func (c *ConfigPropagation) ApplyRolloutStatus(result core.RolloutResult) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	c.Status.LastSyncTime = now
-	c.Status.TargetCount = int32(planned)
-	c.Status.SyncedCount = int32(planned)
-	c.Status.OutOfSyncCount = 0
+	c.Status.TargetCount = int32(result.TotalTargets)
+	c.Status.SyncedCount = int32(result.CompletedCount)
+	pending := result.TotalTargets - result.CompletedCount
+	if pending < 0 {
+		pending = 0
+	}
+	c.Status.OutOfSyncCount = int32(pending)
 	c.Status.OutOfSync = nil
+	reason := "Reconciled"
+	message := fmt.Sprintf("propagated to %d/%d namespaces", result.CompletedCount, result.TotalTargets)
+	status := "True"
+	if pending > 0 {
+		reason = "RollingUpdate"
+		message = fmt.Sprintf("propagated to %d/%d namespaces (batch of %d)", result.CompletedCount, result.TotalTargets, len(result.Planned))
+		status = "False"
+	}
 	c.Status.Conditions = []core.Condition{{
 		Type:               core.CondReady,
-		Status:             "True",
-		Reason:             "Reconciled",
-		Message:            fmt.Sprintf("propagated to %d namespaces", planned),
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
 		LastTransitionTime: now,
 	}}
 }
