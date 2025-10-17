@@ -28,6 +28,7 @@ Refer to .plans/stories/ when looking for implementation details for stories
 - Filenames use lowercase with underscores only when helpful; prefer concise names (`controller.go`, `validation.go`).
 - Exported identifiers use CamelCase; unexported identifiers use lowerCamelCase. Constants use PascalCase when exported.
 - Keep comments focused on intent; add inline comments for non‑obvious concurrency or side effects. Use GoDoc style for exported types and functions.
+- Ensure human readability by separating logical blocks (conditionals, loops, error handling, etc.) with blank lines and by choosing descriptive variable names instead of terse shorthands.
 
 ## Testing Guidelines (Go)
 - Place unit tests in `_test.go` files alongside the code; use table‑driven tests where appropriate.
