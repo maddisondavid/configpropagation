@@ -1,7 +1,7 @@
 package core_test
 
 import (
-	core "configpropagation/src/core"
+	core "configpropagation/pkg/core"
 	"testing"
 )
 

@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"configpropagation/src/core"
+	"configpropagation/pkg/core"
 )
 
 type controllerRuntimeClient struct {

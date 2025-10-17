@@ -50,7 +50,7 @@ spec:
 ```
 
 ## Spec Reference
-The CR spec lives in `src/core/types.go`. Fields mirror Kubernetes conventions and are validated in `src/core/validation.go`.
+The CR spec lives in `pkg/core/types.go`. Fields mirror Kubernetes conventions and are validated in `pkg/core/validation.go`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
