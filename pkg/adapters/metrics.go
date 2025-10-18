@@ -33,10 +33,17 @@ func NewNoopMetricsRecorder() MetricsRecorder {
 
 type noopMetricsRecorder struct{}
 
-func (noopMetricsRecorder) AddPropagations(string, int)            {}
-func (noopMetricsRecorder) ObserveTargets(int, int)                {}
+// AddPropagations is a no-op for the noopMetricsRecorder.
+func (noopMetricsRecorder) AddPropagations(string, int) {}
+
+// ObserveTargets is a no-op for the noopMetricsRecorder.
+func (noopMetricsRecorder) ObserveTargets(int, int) {}
+
+// ObserveReconcileDuration is a no-op for the noopMetricsRecorder.
 func (noopMetricsRecorder) ObserveReconcileDuration(time.Duration) {}
-func (noopMetricsRecorder) IncError(string)                        {}
+
+// IncError is a no-op for the noopMetricsRecorder.
+func (noopMetricsRecorder) IncError(string) {}
 
 type prometheusMetricsRecorder struct{}
 
@@ -68,6 +75,7 @@ var (
 	})
 )
 
+// init registers the metrics collectors with the controller-runtime registry.
 func init() {
 	ctrlmetrics.Registry.MustRegister(propagationCounter, targetsGauge, outOfSyncGauge, errorsCounter, reconcileHistogram)
 }
@@ -77,19 +85,23 @@ func NewPrometheusMetricsRecorder() MetricsRecorder {
 	return &prometheusMetricsRecorder{}
 }
 
+// AddPropagations increments the propagation counter for the Prometheus implementation.
 func (*prometheusMetricsRecorder) AddPropagations(action string, count int) {
 	propagationCounter.WithLabelValues(action).Add(float64(count))
 }
 
+// ObserveTargets records the latest target counts for the Prometheus implementation.
 func (*prometheusMetricsRecorder) ObserveTargets(total, outOfSync int) {
 	targetsGauge.Set(float64(total))
 	outOfSyncGauge.Set(float64(outOfSync))
 }
 
+// ObserveReconcileDuration records how long reconciliations take for the Prometheus implementation.
 func (*prometheusMetricsRecorder) ObserveReconcileDuration(duration time.Duration) {
 	reconcileHistogram.Observe(duration.Seconds())
 }
 
+// IncError increments the error counter for the Prometheus implementation.
 func (*prometheusMetricsRecorder) IncError(stage string) {
 	errorsCounter.WithLabelValues(stage).Inc()
 }

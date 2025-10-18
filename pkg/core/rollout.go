@@ -110,6 +110,7 @@ func (planner *RolloutPlanner) Forget(identifier NamespacedName) {
 	delete(planner.states, identifier)
 }
 
+// ensureStateLocked retrieves or initializes rollout state for the identifier.
 func (planner *RolloutPlanner) ensureStateLocked(identifier NamespacedName, desiredHash string) *rolloutState {
 	state, exists := planner.states[identifier]
 
@@ -128,6 +129,7 @@ func (planner *RolloutPlanner) ensureStateLocked(identifier NamespacedName, desi
 	return state
 }
 
+// min returns the smaller of the provided integers.
 func min(firstValue, secondValue int) int {
 	if firstValue < secondValue {
 		return firstValue

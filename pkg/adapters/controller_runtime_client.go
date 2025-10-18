@@ -24,6 +24,7 @@ func NewControllerRuntimeClient(kubeClient client.Client) KubeClient {
 	return &controllerRuntimeClient{client: kubeClient}
 }
 
+// GetSourceConfigMap retrieves the source ConfigMap data for reconciliation.
 func (clientAdapter *controllerRuntimeClient) GetSourceConfigMap(namespace, name string) (map[string]string, error) {
 	requestContext := context.Background()
 
@@ -36,6 +37,7 @@ func (clientAdapter *controllerRuntimeClient) GetSourceConfigMap(namespace, name
 	return copyStringMap(configMap.Data), nil
 }
 
+// ListNamespacesBySelector resolves namespace names that satisfy the selector requirements.
 func (clientAdapter *controllerRuntimeClient) ListNamespacesBySelector(matchLabels map[string]string, selectorRequirements []LabelSelectorRequirement) ([]string, error) {
 	requestContext := context.Background()
 
@@ -81,6 +83,7 @@ func (clientAdapter *controllerRuntimeClient) ListNamespacesBySelector(matchLabe
 	return namespaceNames, nil
 }
 
+// UpsertConfigMap creates or updates a target ConfigMap with the provided data and metadata.
 func (clientAdapter *controllerRuntimeClient) UpsertConfigMap(namespace, name string, data map[string]string, labelsMap, annotations map[string]string) error {
 	requestContext := context.Background()
 
@@ -131,6 +134,7 @@ func (clientAdapter *controllerRuntimeClient) UpsertConfigMap(namespace, name st
 	return clientAdapter.client.Update(requestContext, &existingConfigMap)
 }
 
+// GetTargetConfigMap returns the current target data, metadata, and existence flag.
 func (clientAdapter *controllerRuntimeClient) GetTargetConfigMap(namespace, name string) (map[string]string, map[string]string, map[string]string, bool, error) {
 	requestContext := context.Background()
 
@@ -147,6 +151,7 @@ func (clientAdapter *controllerRuntimeClient) GetTargetConfigMap(namespace, name
 	return copyStringMap(configMap.Data), copyStringMap(configMap.Labels), copyStringMap(configMap.Annotations), true, nil
 }
 
+// ListManagedTargetNamespaces enumerates namespaces with managed ConfigMaps for the source.
 func (clientAdapter *controllerRuntimeClient) ListManagedTargetNamespaces(source string, name string) ([]string, error) {
 	requestContext := context.Background()
 
@@ -173,6 +178,7 @@ func (clientAdapter *controllerRuntimeClient) ListManagedTargetNamespaces(source
 	return namespaces, nil
 }
 
+// DeleteConfigMap removes a target ConfigMap, ignoring not found errors.
 func (clientAdapter *controllerRuntimeClient) DeleteConfigMap(namespace, name string) error {
 	requestContext := context.Background()
 
@@ -181,6 +187,7 @@ func (clientAdapter *controllerRuntimeClient) DeleteConfigMap(namespace, name st
 	return client.IgnoreNotFound(clientAdapter.client.Delete(requestContext, &configMap))
 }
 
+// UpdateConfigMapMetadata rewrites the labels and annotations for a target ConfigMap.
 func (clientAdapter *controllerRuntimeClient) UpdateConfigMapMetadata(namespace, name string, labelsMap, annotations map[string]string) error {
 	requestContext := context.Background()
 
@@ -196,6 +203,7 @@ func (clientAdapter *controllerRuntimeClient) UpdateConfigMapMetadata(namespace,
 	return clientAdapter.client.Update(requestContext, &configMap)
 }
 
+// toSelectionOperator converts a string operator into the Kubernetes selector type.
 func toSelectionOperator(operator string) (selection.Operator, error) {
 	switch operator {
 	case "In":
@@ -211,6 +219,7 @@ func toSelectionOperator(operator string) (selection.Operator, error) {
 	}
 }
 
+// copyStringMap duplicates a map so callers can mutate the returned value safely.
 func copyStringMap(source map[string]string) map[string]string {
 	if len(source) == 0 {
 		return nil

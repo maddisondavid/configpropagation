@@ -15,6 +15,7 @@ type Key struct {
 	Name      string
 }
 
+// namespacedName converts the key into the core NamespacedName helper type.
 func (key Key) namespacedName() core.NamespacedName {
 	return core.NamespacedName{Namespace: key.Namespace, Name: key.Name}
 }
@@ -51,6 +52,7 @@ func (reconciler *Reconciler) OnNamespaceLabelChange(namespace, name string) {
 	reconciler.workQueue.Add(Key{Namespace: namespace, Name: name})
 }
 
+// NewReconciler builds a reconciler with sane defaults for optional dependencies.
 func NewReconciler(client adapters.KubeClient, eventRecorder adapters.EventRecorder, metricsRecorder adapters.MetricsRecorder) *Reconciler {
 	if eventRecorder == nil {
 		eventRecorder = adapters.NewNoopEventRecorder()
@@ -143,6 +145,7 @@ func (reconciler *Reconciler) reconcileImpl(key Key, spec *core.ConfigPropagatio
 	return result, nil
 }
 
+// nilIfEmpty normalizes empty maps to nil so Kubernetes clients omit them.
 func nilIfEmpty[K comparable, V any](m map[K]V) map[K]V {
 	if len(m) == 0 {
 		return nil
@@ -150,6 +153,7 @@ func nilIfEmpty[K comparable, V any](m map[K]V) map[K]V {
 	return m
 }
 
+// computeEffective filters the source data down to the selected keys.
 func computeEffective(sourceData map[string]string, selectedKeys []string) map[string]string {
 	if sourceData == nil {
 		sourceData = map[string]string{}
@@ -172,6 +176,7 @@ func computeEffective(sourceData map[string]string, selectedKeys []string) map[s
 	return effective
 }
 
+// listTargets returns the namespaces matching the provided selector via the adapter.
 func listTargets(clientAdapter adapters.KubeClient, selector *core.LabelSelector) ([]string, error) {
 	var selectorRequirements []adapters.LabelSelectorRequirement
 
@@ -183,6 +188,7 @@ func listTargets(clientAdapter adapters.KubeClient, selector *core.LabelSelector
 	return clientAdapter.ListNamespacesBySelector(nilIfEmpty(selector.MatchLabels), selectorRequirements)
 }
 
+// syncTargets writes the desired ConfigMap data into each planned namespace.
 func (reconciler *Reconciler) syncTargets(key Key, plannedNamespaces []string, configMapName string, effectiveData map[string]string, contentHash string, sourceNamespace string, conflictPolicy string) error {
 	labels := map[string]string{core.ManagedLabel: "true"}
 	sourceConfigMap := fmt.Sprintf("%s/%s", sourceNamespace, configMapName)
@@ -236,6 +242,7 @@ func (reconciler *Reconciler) syncTargets(key Key, plannedNamespaces []string, c
 	return nil
 }
 
+// planTargets delegates to the rollout planner to determine the next batch of namespaces.
 func planTargets(rolloutPlanner *core.RolloutPlanner, key Key, rolloutHash string, candidateNamespaces []string, strategy string, batchSize int32) ([]string, int) {
 	id := core.NamespacedName{Namespace: key.Namespace, Name: key.Name}
 	return rolloutPlanner.Plan(id, rolloutHash, strategy, batchSize, candidateNamespaces)
@@ -310,26 +317,31 @@ func (reconciler *Reconciler) Finalize(key Key, spec *core.ConfigPropagationSpec
 	return reconciler.cleanupDeselected(key, spec, []string{})
 }
 
+// recordCreate emits metrics and events for created ConfigMaps.
 func (reconciler *Reconciler) recordCreate(key Key, namespace, name string) {
 	reconciler.metricsRecorder.AddPropagations(adapters.MetricsActionCreate, 1)
 	reconciler.eventRecorder.Normalf(key.namespacedName(), eventReasonConfigCreated, "Created ConfigMap %s/%s", namespace, name)
 }
 
+// recordUpdate emits metrics and events for updated ConfigMaps.
 func (reconciler *Reconciler) recordUpdate(key Key, namespace, name string) {
 	reconciler.metricsRecorder.AddPropagations(adapters.MetricsActionUpdate, 1)
 	reconciler.eventRecorder.Normalf(key.namespacedName(), eventReasonConfigUpdated, "Updated ConfigMap %s/%s", namespace, name)
 }
 
+// recordSkip emits metrics and events when a target is skipped.
 func (reconciler *Reconciler) recordSkip(key Key, namespace, name, reason string) {
 	reconciler.metricsRecorder.AddPropagations(adapters.MetricsActionSkip, 1)
 	reconciler.eventRecorder.Normalf(key.namespacedName(), eventReasonConfigSkipped, "Skipped ConfigMap %s/%s: %s", namespace, name, reason)
 }
 
+// recordPrune emits metrics and events when a target is deleted during pruning.
 func (reconciler *Reconciler) recordPrune(key Key, namespace, name string) {
 	reconciler.metricsRecorder.AddPropagations(adapters.MetricsActionPrune, 1)
 	reconciler.eventRecorder.Normalf(key.namespacedName(), eventReasonConfigPruned, "Pruned ConfigMap %s/%s", namespace, name)
 }
 
+// recordError increments error metrics and wraps the provided error with context.
 func (reconciler *Reconciler) recordError(key Key, stage, message string, err error) error {
 	reconciler.metricsRecorder.IncError(stage)
 	reconciler.eventRecorder.Warningf(key.namespacedName(), eventReasonConfigError, "%s: %v", message, err)
