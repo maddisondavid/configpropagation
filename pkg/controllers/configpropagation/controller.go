@@ -220,9 +220,19 @@ func cleanupDeselected(clientAdapter adapters.KubeClient, spec *core.ConfigPropa
 				return fmt.Errorf("delete %s/%s: %w", namespace, spec.SourceRef.Name, err)
 			}
 		} else {
-			// Detach: remove managed markers
-			labels := map[string]string{}
-			annotations := map[string]string{}
+			// Detach: remove managed markers but preserve any other metadata.
+			_, labels, annotations, found, err := clientAdapter.GetTargetConfigMap(namespace, spec.SourceRef.Name)
+			if err != nil {
+				return fmt.Errorf("get target %s/%s: %w", namespace, spec.SourceRef.Name, err)
+			}
+
+			if !found {
+				continue
+			}
+
+			delete(labels, core.ManagedLabel)
+			delete(annotations, core.SourceAnnotation)
+			delete(annotations, core.HashAnnotation)
 
 			if err := clientAdapter.UpdateConfigMapMetadata(namespace, spec.SourceRef.Name, labels, annotations); err != nil {
 				return fmt.Errorf("detach %s/%s: %w", namespace, spec.SourceRef.Name, err)
