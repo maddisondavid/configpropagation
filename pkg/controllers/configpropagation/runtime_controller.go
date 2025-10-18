@@ -3,6 +3,7 @@ package configpropagation
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -104,6 +105,15 @@ func (controller *ConfigPropagationController) Reconcile(requestContext context.
 		}
 
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
+	}
+
+	requeueAfter := time.Duration(0)
+	if configPropagation.Spec.ResyncPeriodSeconds != nil && *configPropagation.Spec.ResyncPeriodSeconds > 0 {
+		requeueAfter = time.Duration(*configPropagation.Spec.ResyncPeriodSeconds) * time.Second
+	}
+
+	if requeueAfter > 0 {
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
 	return ctrl.Result{}, nil

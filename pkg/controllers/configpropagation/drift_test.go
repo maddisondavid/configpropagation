@@ -57,7 +57,7 @@ func TestDriftOverwriteUpdates(t *testing.T) {
 	}
 }
 
-func TestDriftSkipDoesNotUpdate(t *testing.T) {
+func TestDriftSkipStillUpdatesManagedTargets(t *testing.T) {
 	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{core.HashAnnotation: "different"}, tgtLbl: map[string]string{core.ManagedLabel: "true"}}
 	r := NewReconciler(f, nil, nil)
 	key := Key{Namespace: "default", Name: "cp"}
@@ -65,8 +65,8 @@ func TestDriftSkipDoesNotUpdate(t *testing.T) {
 	if _, err := r.Reconcile(key, s); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if f.upserts != 0 {
-		t.Fatalf("expected no upserts for skip, got %d", f.upserts)
+	if f.upserts != 1 {
+		t.Fatalf("expected one upsert for managed target even when skip, got %d", f.upserts)
 	}
 }
 
@@ -94,7 +94,24 @@ func TestNoOpWhenHashesMatch(t *testing.T) {
 	}
 }
 
-func TestNonManagedTargetIsNotMutated(t *testing.T) {
+func TestSkipLeavesUnmanagedTargetsUntouched(t *testing.T) {
+	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{"other": "annotation"}, tgtLbl: map[string]string{}}
+	r := NewReconciler(f, nil, nil)
+	key := Key{Namespace: "default", Name: "cp"}
+	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, ConflictPolicy: core.ConflictSkip, Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate}}
+	result, err := r.Reconcile(key, s)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f.upserts != 0 {
+		t.Fatalf("expected no upserts for unmanaged skip, got %d", f.upserts)
+	}
+	if len(result.OutOfSync) != 1 || result.OutOfSync[0].Namespace != "a" || result.OutOfSync[0].Reason != "ConflictPolicySkip" {
+		t.Fatalf("expected outOfSync entry for unmanaged skip, got %+v", result.OutOfSync)
+	}
+}
+
+func TestOverwriteAdoptsUnmanagedTarget(t *testing.T) {
 	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{"some": "annotation"}, tgtLbl: map[string]string{}}
 	r := NewReconciler(f, nil, nil)
 	key := Key{Namespace: "default", Name: "cp"}
@@ -102,7 +119,7 @@ func TestNonManagedTargetIsNotMutated(t *testing.T) {
 	if _, err := r.Reconcile(key, s); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if f.upserts != 0 {
-		t.Fatalf("expected no upsert on non-managed target, got %d", f.upserts)
+	if f.upserts != 1 {
+		t.Fatalf("expected upsert to adopt unmanaged target, got %d", f.upserts)
 	}
 }

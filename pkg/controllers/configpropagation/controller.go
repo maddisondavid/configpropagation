@@ -89,7 +89,7 @@ func (reconciler *Reconciler) Reconcile(key Key, spec *core.ConfigPropagationSpe
 		return core.RolloutResult{}, err
 	}
 
-	reconciler.metricsRecorder.ObserveTargets(result.TotalTargets, result.TotalTargets-result.CompletedCount)
+	reconciler.metricsRecorder.ObserveTargets(result.TotalTargets, len(result.OutOfSync))
 	reconciler.metricsRecorder.ObserveReconcileDuration(duration)
 
 	return result, nil
@@ -120,18 +120,64 @@ func (reconciler *Reconciler) reconcileImpl(key Key, spec *core.ConfigPropagatio
 
 	plannedNamespaces, completedBefore := planTargets(reconciler.rolloutPlanner, key, rolloutHash, targetNamespaces, spec.Strategy.Type, batchSize)
 
-	err = reconciler.syncTargets(key, plannedNamespaces, spec.SourceRef.Name, effectiveData, rolloutHash, spec.SourceRef.Namespace, spec.ConflictPolicy)
+	syncSummary, err := reconciler.syncTargets(key, plannedNamespaces, spec.SourceRef.Name, effectiveData, rolloutHash, spec.SourceRef.Namespace, spec.ConflictPolicy)
 	if err != nil {
 		return core.RolloutResult{}, err
 	}
 
-	completedTargetCount := completedBefore
-	if spec.Strategy.Type == core.StrategyRolling && len(plannedNamespaces) > 0 {
-		completedTargetCount = reconciler.rolloutPlanner.MarkCompleted(core.NamespacedName{Namespace: key.Namespace, Name: key.Name}, rolloutHash, plannedNamespaces)
+	identifier := core.NamespacedName{Namespace: key.Namespace, Name: key.Name}
+
+	outOfSyncItems := append([]core.OutOfSyncItem(nil), syncSummary.outOfSync...)
+	outOfSyncSet := map[string]struct{}{}
+	for _, item := range outOfSyncItems {
+		outOfSyncSet[item.Namespace] = struct{}{}
 	}
-	if spec.Strategy.Type == core.StrategyImmediate {
-		reconciler.rolloutPlanner.Forget(core.NamespacedName{Namespace: key.Namespace, Name: key.Name})
-		completedTargetCount = len(targetNamespaces)
+
+	completedTargetCount := completedBefore
+	switch spec.Strategy.Type {
+	case core.StrategyRolling:
+		completedTargetCount = reconciler.rolloutPlanner.MarkCompleted(identifier, rolloutHash, syncSummary.completed)
+		completedNamespaces := reconciler.rolloutPlanner.CompletedNamespaces(identifier, rolloutHash)
+		completedSet := make(map[string]struct{}, len(completedNamespaces))
+		for _, namespace := range completedNamespaces {
+			completedSet[namespace] = struct{}{}
+		}
+
+		for _, namespace := range targetNamespaces {
+			if _, done := completedSet[namespace]; done {
+				continue
+			}
+			if _, alreadyReported := outOfSyncSet[namespace]; alreadyReported {
+				continue
+			}
+			outOfSyncItems = append(outOfSyncItems, core.OutOfSyncItem{
+				Namespace: namespace,
+				Reason:    "PendingRollout",
+				Message:   "namespace awaiting rollout batch",
+			})
+		}
+	default:
+		completedTargetCount = len(syncSummary.completed)
+		completedSet := make(map[string]struct{}, len(syncSummary.completed))
+		for _, namespace := range syncSummary.completed {
+			completedSet[namespace] = struct{}{}
+		}
+
+		for _, namespace := range targetNamespaces {
+			if _, done := completedSet[namespace]; done {
+				continue
+			}
+			if _, alreadyReported := outOfSyncSet[namespace]; alreadyReported {
+				continue
+			}
+			outOfSyncItems = append(outOfSyncItems, core.OutOfSyncItem{
+				Namespace: namespace,
+				Reason:    "PendingSync",
+				Message:   "namespace not synchronized",
+			})
+		}
+
+		reconciler.rolloutPlanner.Forget(identifier)
 	}
 	// Cleanup deselected namespaces per prune policy
 	if err := reconciler.cleanupDeselected(key, spec, targetNamespaces); err != nil {
@@ -141,6 +187,7 @@ func (reconciler *Reconciler) reconcileImpl(key Key, spec *core.ConfigPropagatio
 		Planned:        plannedNamespaces,
 		TotalTargets:   len(targetNamespaces),
 		CompletedCount: completedTargetCount,
+		OutOfSync:      outOfSyncItems,
 	}
 	return result, nil
 }
@@ -188,8 +235,14 @@ func listTargets(clientAdapter adapters.KubeClient, selector *core.LabelSelector
 	return clientAdapter.ListNamespacesBySelector(nilIfEmpty(selector.MatchLabels), selectorRequirements)
 }
 
+type syncOutcome struct {
+	completed []string
+	outOfSync []core.OutOfSyncItem
+}
+
 // syncTargets writes the desired ConfigMap data into each planned namespace.
-func (reconciler *Reconciler) syncTargets(key Key, plannedNamespaces []string, configMapName string, effectiveData map[string]string, contentHash string, sourceNamespace string, conflictPolicy string) error {
+func (reconciler *Reconciler) syncTargets(key Key, plannedNamespaces []string, configMapName string, effectiveData map[string]string, contentHash string, sourceNamespace string, conflictPolicy string) (syncOutcome, error) {
+	outcome := syncOutcome{}
 	labels := map[string]string{core.ManagedLabel: "true"}
 	sourceConfigMap := fmt.Sprintf("%s/%s", sourceNamespace, configMapName)
 
@@ -201,7 +254,7 @@ func (reconciler *Reconciler) syncTargets(key Key, plannedNamespaces []string, c
 	for _, targetNamespace := range plannedNamespaces {
 		_, targetLabels, targetAnnotations, targetFound, err := reconciler.clientAdapter.GetTargetConfigMap(targetNamespace, configMapName)
 		if err != nil {
-			return reconciler.recordError(key, "target_lookup", fmt.Sprintf("get target %s/%s", targetNamespace, configMapName), err)
+			return outcome, reconciler.recordError(key, "target_lookup", fmt.Sprintf("get target %s/%s", targetNamespace, configMapName), err)
 		}
 
 		managed := false
@@ -214,32 +267,34 @@ func (reconciler *Reconciler) syncTargets(key Key, plannedNamespaces []string, c
 			}
 		}
 
-		if targetFound && !managed {
-			reconciler.recordSkip(key, targetNamespace, configMapName, "target not managed by configpropagator")
+		if targetFound && !managed && conflictPolicy == core.ConflictSkip {
+			reconciler.recordSkip(key, targetNamespace, configMapName, "existing unmanaged ConfigMap (conflictPolicy=skip)")
+			outcome.outOfSync = append(outcome.outOfSync, core.OutOfSyncItem{
+				Namespace: targetNamespace,
+				Reason:    "ConflictPolicySkip",
+				Message:   "existing ConfigMap is unmanaged and conflictPolicy=skip",
+			})
 			continue
 		}
 
-		if targetFound && targetAnnotations[core.HashAnnotation] == contentHash {
+		if targetFound && managed && targetAnnotations[core.HashAnnotation] == contentHash {
 			reconciler.recordSkip(key, targetNamespace, configMapName, "already up to date")
-			continue
-		}
-
-		if targetFound && conflictPolicy == core.ConflictSkip {
-			reconciler.recordSkip(key, targetNamespace, configMapName, "conflict policy skip")
+			outcome.completed = append(outcome.completed, targetNamespace)
 			continue
 		}
 
 		if err := reconciler.clientAdapter.UpsertConfigMap(targetNamespace, configMapName, effectiveData, labels, annotations); err != nil {
-			return reconciler.recordError(key, "upsert", fmt.Sprintf("upsert %s/%s", targetNamespace, configMapName), err)
+			return outcome, reconciler.recordError(key, "upsert", fmt.Sprintf("upsert %s/%s", targetNamespace, configMapName), err)
 		}
 
+		outcome.completed = append(outcome.completed, targetNamespace)
 		if targetFound {
 			reconciler.recordUpdate(key, targetNamespace, configMapName)
 		} else {
 			reconciler.recordCreate(key, targetNamespace, configMapName)
 		}
 	}
-	return nil
+	return outcome, nil
 }
 
 // planTargets delegates to the rollout planner to determine the next batch of namespaces.

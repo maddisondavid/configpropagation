@@ -59,13 +59,15 @@ func (configPropagation *ConfigPropagation) ApplyRolloutStatus(result core.Rollo
 	configPropagation.Status.TargetCount = int32(result.TotalTargets)
 	configPropagation.Status.SyncedCount = int32(result.CompletedCount)
 
-	pendingCount := result.TotalTargets - result.CompletedCount
-	if pendingCount < 0 {
-		pendingCount = 0
-	}
-
+	pendingCount := len(result.OutOfSync)
 	configPropagation.Status.OutOfSyncCount = int32(pendingCount)
-	configPropagation.Status.OutOfSync = nil
+	if pendingCount > 0 {
+		copied := make([]core.OutOfSyncItem, len(result.OutOfSync))
+		copy(copied, result.OutOfSync)
+		configPropagation.Status.OutOfSync = copied
+	} else {
+		configPropagation.Status.OutOfSync = nil
+	}
 	readyCondition := core.Condition{
 		Type:               core.CondReady,
 		LastTransitionTime: currentTime,

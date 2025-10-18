@@ -5,10 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -130,5 +133,39 @@ func TestControllerFinalizeRemovesFinalizer(t *testing.T) {
 
 	if len(kubeStub.deleteCalls) != 1 || kubeStub.deleteCalls[0] != [2]string{"ns1", "cfg"} {
 		t.Fatalf("expected delete for managed target, got %+v", kubeStub.deleteCalls)
+	}
+}
+
+func TestReconcileSchedulesResync(t *testing.T) {
+	resync := int32(45)
+	configPropagation := &configv1alpha1.ConfigPropagation{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "example"},
+		Spec: core.ConfigPropagationSpec{
+			SourceRef:           core.ObjectRef{Namespace: "src", Name: "cfg"},
+			NamespaceSelector:   &core.LabelSelector{},
+			ResyncPeriodSeconds: &resync,
+		},
+	}
+
+	kubeAdapter := &fakeClient{
+		data:       map[string]map[string]map[string]string{"src": {"cfg": {"key": "value"}}},
+		namespaces: []string{"target"},
+	}
+
+	controller := &ConfigPropagationController{
+		Client:     buildFakeClient(t, configPropagation),
+		logger:     logr.Discard(),
+		reconciler: NewReconciler(kubeAdapter, nil, nil),
+	}
+
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "example"}}
+	result, err := controller.Reconcile(context.Background(), request)
+	if err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+
+	expected := time.Duration(resync) * time.Second
+	if result.RequeueAfter != expected {
+		t.Fatalf("expected RequeueAfter %s, got %+v", expected, result)
 	}
 }
