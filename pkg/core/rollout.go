@@ -10,9 +10,15 @@ type NamespacedName struct {
 
 // RolloutResult captures the outcome of a reconciliation loop with rollout progress.
 type RolloutResult struct {
-	Planned        []string
-	TotalTargets   int
-	CompletedCount int
+	Planned          []string
+	TotalTargets     int
+	CompletedCount   int
+	CompletedTargets []string
+	CreatedTargets   []string
+	UpdatedTargets   []string
+	SkippedTargets   []OutOfSyncItem
+	PrunedTargets    []string
+	DetachedTargets  []string
 }
 
 // RolloutPlanner tracks per-object rollout progress for rolling strategies.

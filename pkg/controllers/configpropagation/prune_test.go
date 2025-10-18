@@ -42,7 +42,8 @@ func (f *fakePruneClient) UpdateConfigMapMetadata(namespace, name string, labels
 func TestCleanupDeselectedPruneDeletes(t *testing.T) {
 	fc := &fakePruneClient{managed: []string{"a", "b"}}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Prune: boolPtr(true)}
-	if err := cleanupDeselected(fc, s, []string{"a"}); err != nil {
+	summary, err := cleanupDeselected(fc, s, []string{"a"})
+	if err != nil {
 		t.Fatalf("cleanup error: %v", err)
 	}
 	if len(fc.deleted) != 1 || fc.deleted[0] != [2]string{"b", "n"} {
@@ -51,12 +52,16 @@ func TestCleanupDeselectedPruneDeletes(t *testing.T) {
 	if len(fc.detached) != 0 {
 		t.Fatalf("no detaches expected")
 	}
+	if got := summary.pruned; len(got) != 1 || got[0] != "b" {
+		t.Fatalf("expected summary pruned b, got %+v", got)
+	}
 }
 
 func TestCleanupDeselectedDetachWhenPruneFalse(t *testing.T) {
 	fc := &fakePruneClient{managed: []string{"a", "b"}}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Prune: boolPtr(false)}
-	if err := cleanupDeselected(fc, s, []string{"a"}); err != nil {
+	summary, err := cleanupDeselected(fc, s, []string{"a"})
+	if err != nil {
 		t.Fatalf("cleanup error: %v", err)
 	}
 	if len(fc.detached) != 1 || fc.detached[0] != [2]string{"b", "n"} {
@@ -64,6 +69,9 @@ func TestCleanupDeselectedDetachWhenPruneFalse(t *testing.T) {
 	}
 	if len(fc.deleted) != 0 {
 		t.Fatalf("no deletes expected")
+	}
+	if got := summary.detached; len(got) != 1 || got[0] != "b" {
+		t.Fatalf("expected summary detached b, got %+v", got)
 	}
 }
 
@@ -83,11 +91,15 @@ func TestFinalizeCleansAll(t *testing.T) {
 func TestCleanupDeselectedNoopsWhenNoneManaged(t *testing.T) {
 	fc := &fakePruneClient{managed: []string{}}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Prune: boolPtr(true)}
-	if err := cleanupDeselected(fc, s, []string{"a"}); err != nil {
+	summary, err := cleanupDeselected(fc, s, []string{"a"})
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(fc.deleted) != 0 || len(fc.detached) != 0 {
 		t.Fatalf("expected no actions")
+	}
+	if len(summary.pruned) != 0 || len(summary.detached) != 0 {
+		t.Fatalf("expected empty cleanup summary")
 	}
 }
 

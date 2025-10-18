@@ -3,6 +3,7 @@ package configpropagation
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -13,6 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"configpropagation/pkg/adapters"
+	adapterevents "configpropagation/pkg/adapters/events"
+	adaptermetrics "configpropagation/pkg/adapters/metrics"
 	configv1alpha1 "configpropagation/pkg/api/v1alpha1"
 	"configpropagation/pkg/core"
 )
@@ -22,6 +25,8 @@ type ConfigPropagationController struct {
 	client.Client
 	log        logr.Logger
 	reconciler *Reconciler
+	events     *adapterevents.Recorder
+	metrics    *adaptermetrics.Recorder
 }
 
 var _ reconcile.Reconciler = &ConfigPropagationController{}
@@ -33,12 +38,15 @@ func NewController(mgr ctrl.Manager) *ConfigPropagationController {
 		Client:     mgr.GetClient(),
 		log:        ctrl.Log.WithName("controllers").WithName("ConfigPropagation"),
 		reconciler: NewReconciler(kube),
+		events:     adapterevents.NewRecorder(mgr.GetEventRecorderFor("configpropagation")),
+		metrics:    adaptermetrics.NewRecorder(nil),
 	}
 }
 
 // Reconcile runs the core reconciliation logic for a ConfigPropagation instance.
 func (c *ConfigPropagationController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := c.log.WithValues("configpropagation", req.NamespacedName)
+	start := time.Now()
 	var cp configv1alpha1.ConfigPropagation
 	if err := c.Get(ctx, req.NamespacedName, &cp); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -57,6 +65,8 @@ func (c *ConfigPropagationController) Reconcile(ctx context.Context, req ctrl.Re
 	} else {
 		if controllerutil.ContainsFinalizer(&cp, core.Finalizer) {
 			if err := c.reconciler.Finalize(&cp.Spec); err != nil {
+				c.events.Error(&cp, err)
+				c.metrics.ObserveError()
 				return ctrl.Result{}, err
 			}
 			controllerutil.RemoveFinalizer(&cp, core.Finalizer)
@@ -70,8 +80,12 @@ func (c *ConfigPropagationController) Reconcile(ctx context.Context, req ctrl.Re
 	result, err := c.reconciler.Reconcile(Key{Namespace: req.Namespace, Name: req.Name}, &cp.Spec)
 	if err != nil {
 		log.Error(err, "reconciliation failed")
+		c.events.Error(&cp, err)
+		c.metrics.ObserveError()
 		return ctrl.Result{}, err
 	}
+	c.emitTargetEvents(&cp, result)
+	c.metrics.ObserveReconcile(result, time.Since(start))
 
 	statusPatch := client.MergeFrom(cp.DeepCopy())
 	cp.ApplyRolloutStatus(result)
@@ -79,9 +93,28 @@ func (c *ConfigPropagationController) Reconcile(ctx context.Context, req ctrl.Re
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
 		}
-		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
+		wrapped := fmt.Errorf("update status: %w", err)
+		c.events.Error(&cp, wrapped)
+		c.metrics.ObserveError()
+		return ctrl.Result{}, wrapped
 	}
 	return ctrl.Result{}, nil
+}
+
+func (c *ConfigPropagationController) emitTargetEvents(cp *configv1alpha1.ConfigPropagation, result core.RolloutResult) {
+	name := cp.Spec.SourceRef.Name
+	for _, ns := range result.CreatedTargets {
+		c.events.TargetCreated(cp, ns, name)
+	}
+	for _, ns := range result.UpdatedTargets {
+		c.events.TargetUpdated(cp, ns, name)
+	}
+	for _, item := range result.SkippedTargets {
+		c.events.TargetSkipped(cp, item.Namespace, name, item.Reason, item.Message)
+	}
+	for _, ns := range result.PrunedTargets {
+		c.events.TargetPruned(cp, ns, name)
+	}
 }
 
 // SetupWithManager registers the controller with the provided manager.

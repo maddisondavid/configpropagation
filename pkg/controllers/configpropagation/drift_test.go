@@ -13,6 +13,7 @@ type fakeDriftClient struct {
 	// target annotations/labels pre-existing
 	tgtAnn  map[string]string
 	tgtLbl  map[string]string
+	found   bool
 	upserts int
 }
 
@@ -33,7 +34,7 @@ func (f *fakeDriftClient) UpsertConfigMap(ns, name string, data map[string]strin
 	return nil
 }
 func (f *fakeDriftClient) GetTargetConfigMap(namespace, name string) (map[string]string, map[string]string, map[string]string, bool, error) {
-	return nil, f.tgtLbl, f.tgtAnn, true, nil
+	return nil, f.tgtLbl, f.tgtAnn, f.found, nil
 }
 func (f *fakeDriftClient) ListManagedTargetNamespaces(source string, name string) ([]string, error) {
 	return []string{"a"}, nil
@@ -45,39 +46,48 @@ func (f *fakeDriftClient) UpdateConfigMapMetadata(namespace, name string, labels
 
 func TestDriftOverwriteUpdates(t *testing.T) {
 	// Source hash will be for {k:v}
-	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{core.HashAnnotation: "different"}, tgtLbl: map[string]string{core.ManagedLabel: "true"}}
+	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{core.HashAnnotation: "different"}, tgtLbl: map[string]string{core.ManagedLabel: "true"}, found: true}
 	r := NewReconciler(f)
 	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, ConflictPolicy: core.ConflictOverwrite, Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate}}
-	if _, err := r.Reconcile(key, s); err != nil {
+	result, err := r.Reconcile(key, s)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.upserts != 1 {
 		t.Fatalf("expected one upsert, got %d", f.upserts)
 	}
+	if len(result.UpdatedTargets) != 1 || result.UpdatedTargets[0] != "a" {
+		t.Fatalf("expected updated target recorded, got %+v", result.UpdatedTargets)
+	}
 }
 
 func TestDriftSkipDoesNotUpdate(t *testing.T) {
-	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{core.HashAnnotation: "different"}, tgtLbl: map[string]string{core.ManagedLabel: "true"}}
+	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{core.HashAnnotation: "different"}, tgtLbl: map[string]string{core.ManagedLabel: "true"}, found: true}
 	r := NewReconciler(f)
 	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, ConflictPolicy: core.ConflictSkip, Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate}}
-	if _, err := r.Reconcile(key, s); err != nil {
+	result, err := r.Reconcile(key, s)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.upserts != 0 {
 		t.Fatalf("expected no upserts for skip, got %d", f.upserts)
 	}
+	if len(result.SkippedTargets) != 1 || result.SkippedTargets[0].Namespace != "a" {
+		t.Fatalf("expected skipped target recorded, got %+v", result.SkippedTargets)
+	}
 }
 
 func TestNoOpWhenHashesMatch(t *testing.T) {
 	// Compute the same hash by using same data and setting target hash afterwards via syncTargets path.
-	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{}, tgtLbl: map[string]string{core.ManagedLabel: "true"}}
+	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{}, tgtLbl: map[string]string{core.ManagedLabel: "true"}, found: true}
 	r := NewReconciler(f)
 	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, ConflictPolicy: core.ConflictOverwrite, Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate}}
 	// First reconcile writes and sets hash
-	if _, err := r.Reconcile(key, s); err != nil {
+	result, err := r.Reconcile(key, s)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.upserts != 1 {
@@ -86,23 +96,31 @@ func TestNoOpWhenHashesMatch(t *testing.T) {
 	// Simulate target now having matching hash by reusing same fake that returns found with same annotations set by previous call
 	// We approximate by setting tgtAnn to the source hash using core.HashData
 	f.tgtAnn[core.HashAnnotation] = core.HashData(map[string]string{"k": "v"})
-	if _, err := r.Reconcile(key, s); err != nil {
+	result, err = r.Reconcile(key, s)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.upserts != 1 {
 		t.Fatalf("expected no additional upsert when hashes match, got %d", f.upserts)
 	}
+	if len(result.CompletedTargets) != 1 || result.CompletedTargets[0] != "a" {
+		t.Fatalf("expected completed target recorded, got %+v", result.CompletedTargets)
+	}
 }
 
 func TestNonManagedTargetIsNotMutated(t *testing.T) {
-	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{"some": "annotation"}, tgtLbl: map[string]string{}}
+	f := &fakeDriftClient{src: map[string]map[string]map[string]string{"s": {"n": {"k": "v"}}}, ns: []string{"a"}, tgtAnn: map[string]string{"some": "annotation"}, tgtLbl: map[string]string{}, found: true}
 	r := NewReconciler(f)
 	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, ConflictPolicy: core.ConflictOverwrite, Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate}}
-	if _, err := r.Reconcile(key, s); err != nil {
+	result, err := r.Reconcile(key, s)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.upserts != 0 {
 		t.Fatalf("expected no upsert on non-managed target, got %d", f.upserts)
+	}
+	if len(result.SkippedTargets) != 1 || result.SkippedTargets[0].Reason != "NotManaged" {
+		t.Fatalf("expected NotManaged skip recorded, got %+v", result.SkippedTargets)
 	}
 }

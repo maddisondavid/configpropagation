@@ -103,13 +103,13 @@ func TestSyncCopiesFilteredDataAndSetsManagedMetadata(t *testing.T) {
 		DataKeys:          []string{"a", "b"},
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyImmediate},
 	}
-	planned, err := r.Reconcile(key, s)
+	result, err := r.Reconcile(key, s)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
 	// Expect two namespaces selected
-	if len(planned.Planned) != 2 {
-		t.Fatalf("expected 2 planned namespaces, got %d", len(planned.Planned))
+	if len(result.Planned) != 2 {
+		t.Fatalf("expected 2 planned namespaces, got %d", len(result.Planned))
 	}
 	// Verify upserts
 	if len(fc.upserts) != 2 {
@@ -155,12 +155,12 @@ func TestSyncWhenSourceMissingAndEvents(t *testing.T) {
 		NamespaceSelector: &core.LabelSelector{MatchLabels: map[string]string{"team": "x"}},
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyImmediate},
 	}
-	planned, err := r.Reconcile(key, s)
+	result, err := r.Reconcile(key, s)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
-	if len(planned.Planned) != 1 {
-		t.Fatalf("expected 1 planned, got %d", len(planned.Planned))
+	if len(result.Planned) != 1 {
+		t.Fatalf("expected 1 planned, got %d", len(result.Planned))
 	}
 	if len(fc.upserts) != 1 {
 		t.Fatalf("expected 1 upsert, got %d", len(fc.upserts))
@@ -191,12 +191,12 @@ func TestSyncCopiesAllWhenNoDataKeysAndExpressionsProvided(t *testing.T) {
 		},
 		Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate},
 	}
-	planned, err := r.Reconcile(key, s)
+	result, err := r.Reconcile(key, s)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
-	if len(planned.Planned) != 1 {
-		t.Fatalf("expected 1 planned, got %d", len(planned.Planned))
+	if len(result.Planned) != 1 {
+		t.Fatalf("expected 1 planned, got %d", len(result.Planned))
 	}
 	u := fc.upserts[0]
 	if len(u.data) != 2 {

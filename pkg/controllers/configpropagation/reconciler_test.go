@@ -152,14 +152,21 @@ func TestHelpersComputeEffectiveAndListTargetsAndSyncTargets(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got, []string{"x"}) {
 		t.Fatalf("listTargets failed: %v %v", got, err)
 	}
-	// syncTargets executes loop and returns nil
+	// syncTargets executes loop and returns summary
 	hash := core.HashData(map[string]string{"k": "v"})
-	if err := syncTargets(fc, []string{"ns"}, "name", map[string]string{"k": "v"}, hash, "src", core.ConflictOverwrite); err != nil {
+	summary, err := syncTargets(fc, []string{"ns"}, "name", map[string]string{"k": "v"}, hash, "src", core.ConflictOverwrite)
+	if err != nil {
 		t.Fatalf("syncTargets error: %v", err)
+	}
+	if len(summary.created) != 1 || summary.created[0] != "ns" {
+		t.Fatalf("expected created namespace recorded, got %+v", summary)
+	}
+	if len(summary.completed) != 1 || summary.completed[0] != "ns" {
+		t.Fatalf("expected completed namespace recorded, got %+v", summary)
 	}
 	// syncTargets error path
 	bu := &badUpsert{*fc}
-	if err := syncTargets(bu, []string{"ns"}, "name", map[string]string{"k": "v"}, hash, "src", core.ConflictOverwrite); err == nil {
+	if _, err := syncTargets(bu, []string{"ns"}, "name", map[string]string{"k": "v"}, hash, "src", core.ConflictOverwrite); err == nil {
 		t.Fatalf("expected syncTargets to error on upsert")
 	}
 }
