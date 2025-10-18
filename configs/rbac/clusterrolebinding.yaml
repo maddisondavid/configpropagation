@@ -1,0 +1,15 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: configpropagation-manager
+  labels:
+    app.kubernetes.io/name: configpropagation
+    app.kubernetes.io/component: controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: configpropagation-manager
+subjects:
+  - kind: ServiceAccount
+    name: configpropagation-controller
+    namespace: configpropagation-system

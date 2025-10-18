@@ -1,0 +1,43 @@
+image:
+  repository: configpropagation/dev-controller
+  tag: dev
+
+serviceAccount:
+  create: true
+  name: configpropagation-controller
+
+rbac:
+  create: true
+  leaderElection:
+    createRole: true
+
+leaderElection:
+  enabled: true
+
+metrics:
+  enabled: true
+  bindAddress: ":8080"
+  port: 8080
+
+healthProbe:
+  bindAddress: ":8081"
+
+webhook:
+  enabled: true
+  port: 9443
+
+env:
+  batchSize: 3
+  workers: 2
+  resyncSeconds: 45
+  extra:
+    - name: STRICT_SELECTOR_GUARD
+      value: "true"
+    - name: ENFORCE_SOURCE_IMMUTABILITY
+      value: "false"
+    - name: SOURCE_NAMESPACE
+      value: platform-dev
+    - name: TARGET_NAMESPACES
+      value: "apps-dev,platform-dev"
+
+args: []

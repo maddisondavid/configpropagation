@@ -17,6 +17,8 @@ serviceAccount:
 
 rbac:
   create: true
+  leaderElection:
+    createRole: true
 
 podAnnotations: {}
 podLabels: {}
@@ -43,6 +45,12 @@ env:
 
 args: []
 
+leaderElection:
+  enabled: false
+
+healthProbe:
+  bindAddress: ":8081"
+
 livenessProbe:
   enabled: true
   httpGet:
@@ -63,4 +71,9 @@ readinessProbe:
 
 metrics:
   enabled: true
+  bindAddress: ":8080"
   port: 8080
+
+webhook:
+  enabled: true
+  port: 9443

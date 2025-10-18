@@ -1,0 +1,47 @@
+apiVersion: skaffold/v4beta6
+kind: Config
+metadata:
+  name: configpropagation
+build:
+  artifacts:
+    - image: configpropagation/dev-controller
+      context: .
+      docker:
+        dockerfile: Dockerfile
+  local:
+    push: true
+deploy:
+  helm:
+    releases:
+      - name: configpropagation
+        chartPath: charts/configpropagation
+        namespace: configpropagation-system
+        createNamespace: true
+        valuesFiles:
+          - configs/stafford/dev.yaml
+        setValues:
+          image.repository: configpropagation/dev-controller
+          image.tag: dev
+portForward:
+  - resourceType: deployment
+    resourceName: configpropagation
+    namespace: configpropagation-system
+    port: 8080
+    localPort: 8080
+profiles:
+  - name: local
+    build:
+      local:
+        push: false
+    deploy:
+      helm:
+        releases:
+          - name: configpropagation
+            chartPath: charts/configpropagation
+            namespace: configpropagation-system
+            createNamespace: true
+            valuesFiles:
+              - configs/stafford/dev.yaml
+            setValues:
+              image.repository: configpropagation/dev-controller
+              image.tag: dev
