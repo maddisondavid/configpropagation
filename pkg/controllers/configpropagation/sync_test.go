@@ -95,7 +95,7 @@ func TestSyncCopiesFilteredDataAndSetsManagedMetadata(t *testing.T) {
 			"nsc": {"team": "b"},
 		},
 	}
-	r := NewReconciler(fc)
+	r := NewReconciler(fc, nil, nil)
 	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{
 		SourceRef:         core.ObjectRef{Namespace: "src", Name: "cfg"},
@@ -143,7 +143,7 @@ func TestSyncWhenSourceMissingAndEvents(t *testing.T) {
 			"ns": {"team": "x"},
 		},
 	}
-	r := NewReconciler(fc)
+	r := NewReconciler(fc, nil, nil)
 	// Exercise event enqueue helpers for coverage
 	r.OnCRChange("ns", "name")
 	r.OnSourceChange("ns", "name")
@@ -181,7 +181,7 @@ func TestSyncCopiesAllWhenNoDataKeysAndExpressionsProvided(t *testing.T) {
 		},
 		nsLabels: map[string]map[string]string{"ns": {"team": "z"}},
 	}
-	r := NewReconciler(fc)
+	r := NewReconciler(fc, nil, nil)
 	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{
 		SourceRef: core.ObjectRef{Namespace: "src", Name: "cfg"},
@@ -211,7 +211,7 @@ func TestSyncIgnoresMissingDataKeys(t *testing.T) {
 		},
 		nsLabels: map[string]map[string]string{"ns": {"team": "z"}},
 	}
-	r := NewReconciler(fc)
+	r := NewReconciler(fc, nil, nil)
 	key := Key{Namespace: "default", Name: "cp"}
 	s := &core.ConfigPropagationSpec{
 		SourceRef:         core.ObjectRef{Namespace: "src", Name: "cfg"},

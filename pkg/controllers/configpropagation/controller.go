@@ -3,6 +3,7 @@ package configpropagation
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"configpropagation/pkg/adapters"
 	"configpropagation/pkg/core"
@@ -14,11 +15,25 @@ type Key struct {
 	Name      string
 }
 
+func (key Key) namespacedName() core.NamespacedName {
+	return core.NamespacedName{Namespace: key.Namespace, Name: key.Name}
+}
+
+const (
+	eventReasonConfigCreated = "ConfigCreated"
+	eventReasonConfigUpdated = "ConfigUpdated"
+	eventReasonConfigSkipped = "ConfigSkipped"
+	eventReasonConfigPruned  = "ConfigPruned"
+	eventReasonConfigError   = "ConfigError"
+)
+
 // Reconciler wires the kube client and a simple work queue.
 type Reconciler struct {
-	clientAdapter  adapters.KubeClient
-	workQueue      *core.WorkQueue[Key]
-	rolloutPlanner *core.RolloutPlanner
+	clientAdapter   adapters.KubeClient
+	workQueue       *core.WorkQueue[Key]
+	rolloutPlanner  *core.RolloutPlanner
+	eventRecorder   adapters.EventRecorder
+	metricsRecorder adapters.MetricsRecorder
 }
 
 // OnCRChange enqueues a reconcile when the CR changes.
@@ -36,11 +51,19 @@ func (reconciler *Reconciler) OnNamespaceLabelChange(namespace, name string) {
 	reconciler.workQueue.Add(Key{Namespace: namespace, Name: name})
 }
 
-func NewReconciler(client adapters.KubeClient) *Reconciler {
+func NewReconciler(client adapters.KubeClient, eventRecorder adapters.EventRecorder, metricsRecorder adapters.MetricsRecorder) *Reconciler {
+	if eventRecorder == nil {
+		eventRecorder = adapters.NewNoopEventRecorder()
+	}
+	if metricsRecorder == nil {
+		metricsRecorder = adapters.NewNoopMetricsRecorder()
+	}
 	return &Reconciler{
-		clientAdapter:  client,
-		workQueue:      core.NewWorkQueue[Key](),
-		rolloutPlanner: core.NewRolloutPlanner(),
+		clientAdapter:   client,
+		workQueue:       core.NewWorkQueue[Key](),
+		rolloutPlanner:  core.NewRolloutPlanner(),
+		eventRecorder:   eventRecorder,
+		metricsRecorder: metricsRecorder,
 	}
 }
 
@@ -55,21 +78,33 @@ func (reconciler *Reconciler) Reconcile(key Key, spec *core.ConfigPropagationSpe
 		return core.RolloutResult{}, err
 	}
 
-	return reconcileImpl(reconciler.clientAdapter, reconciler.rolloutPlanner, key, spec)
+	start := time.Now()
+	result, err := reconciler.reconcileImpl(key, spec)
+	duration := time.Since(start)
+
+	if err != nil {
+		reconciler.metricsRecorder.ObserveReconcileDuration(duration)
+		return core.RolloutResult{}, err
+	}
+
+	reconciler.metricsRecorder.ObserveTargets(result.TotalTargets, result.TotalTargets-result.CompletedCount)
+	reconciler.metricsRecorder.ObserveReconcileDuration(duration)
+
+	return result, nil
 }
 
 // Internal implementation separated for testability and full coverage.
-func reconcileImpl(clientAdapter adapters.KubeClient, rolloutPlanner *core.RolloutPlanner, key Key, spec *core.ConfigPropagationSpec) (core.RolloutResult, error) {
-	sourceConfigData, err := clientAdapter.GetSourceConfigMap(spec.SourceRef.Namespace, spec.SourceRef.Name)
+func (reconciler *Reconciler) reconcileImpl(key Key, spec *core.ConfigPropagationSpec) (core.RolloutResult, error) {
+	sourceConfigData, err := reconciler.clientAdapter.GetSourceConfigMap(spec.SourceRef.Namespace, spec.SourceRef.Name)
 	if err != nil {
-		return core.RolloutResult{}, fmt.Errorf("get source: %w", err)
+		return core.RolloutResult{}, reconciler.recordError(key, "source_fetch", fmt.Sprintf("get source %s/%s", spec.SourceRef.Namespace, spec.SourceRef.Name), err)
 	}
 
 	effectiveData := computeEffective(sourceConfigData, spec.DataKeys)
 
-	targetNamespaces, err := listTargets(clientAdapter, spec.NamespaceSelector)
+	targetNamespaces, err := listTargets(reconciler.clientAdapter, spec.NamespaceSelector)
 	if err != nil {
-		return core.RolloutResult{}, fmt.Errorf("list namespaces: %w", err)
+		return core.RolloutResult{}, reconciler.recordError(key, "namespace_list", "list namespaces", err)
 	}
 
 	sort.Strings(targetNamespaces)
@@ -81,23 +116,23 @@ func reconcileImpl(clientAdapter adapters.KubeClient, rolloutPlanner *core.Rollo
 
 	rolloutHash := core.HashData(effectiveData)
 
-	plannedNamespaces, completedBefore := planTargets(rolloutPlanner, key, rolloutHash, targetNamespaces, spec.Strategy.Type, batchSize)
+	plannedNamespaces, completedBefore := planTargets(reconciler.rolloutPlanner, key, rolloutHash, targetNamespaces, spec.Strategy.Type, batchSize)
 
-	err = syncTargets(clientAdapter, plannedNamespaces, spec.SourceRef.Name, effectiveData, rolloutHash, spec.SourceRef.Namespace, spec.ConflictPolicy)
+	err = reconciler.syncTargets(key, plannedNamespaces, spec.SourceRef.Name, effectiveData, rolloutHash, spec.SourceRef.Namespace, spec.ConflictPolicy)
 	if err != nil {
 		return core.RolloutResult{}, err
 	}
 
 	completedTargetCount := completedBefore
 	if spec.Strategy.Type == core.StrategyRolling && len(plannedNamespaces) > 0 {
-		completedTargetCount = rolloutPlanner.MarkCompleted(core.NamespacedName{Namespace: key.Namespace, Name: key.Name}, rolloutHash, plannedNamespaces)
+		completedTargetCount = reconciler.rolloutPlanner.MarkCompleted(core.NamespacedName{Namespace: key.Namespace, Name: key.Name}, rolloutHash, plannedNamespaces)
 	}
 	if spec.Strategy.Type == core.StrategyImmediate {
-		rolloutPlanner.Forget(core.NamespacedName{Namespace: key.Namespace, Name: key.Name})
+		reconciler.rolloutPlanner.Forget(core.NamespacedName{Namespace: key.Namespace, Name: key.Name})
 		completedTargetCount = len(targetNamespaces)
 	}
 	// Cleanup deselected namespaces per prune policy
-	if err := cleanupDeselected(clientAdapter, spec, targetNamespaces); err != nil {
+	if err := reconciler.cleanupDeselected(key, spec, targetNamespaces); err != nil {
 		return core.RolloutResult{}, err
 	}
 	result := core.RolloutResult{
@@ -148,7 +183,7 @@ func listTargets(clientAdapter adapters.KubeClient, selector *core.LabelSelector
 	return clientAdapter.ListNamespacesBySelector(nilIfEmpty(selector.MatchLabels), selectorRequirements)
 }
 
-func syncTargets(clientAdapter adapters.KubeClient, plannedNamespaces []string, configMapName string, effectiveData map[string]string, contentHash string, sourceNamespace string, conflictPolicy string) error {
+func (reconciler *Reconciler) syncTargets(key Key, plannedNamespaces []string, configMapName string, effectiveData map[string]string, contentHash string, sourceNamespace string, conflictPolicy string) error {
 	labels := map[string]string{core.ManagedLabel: "true"}
 	sourceConfigMap := fmt.Sprintf("%s/%s", sourceNamespace, configMapName)
 
@@ -158,27 +193,44 @@ func syncTargets(clientAdapter adapters.KubeClient, plannedNamespaces []string, 
 	}
 
 	for _, targetNamespace := range plannedNamespaces {
-		_, targetLabels, targetAnnotations, targetFound, err := clientAdapter.GetTargetConfigMap(targetNamespace, configMapName)
+		_, targetLabels, targetAnnotations, targetFound, err := reconciler.clientAdapter.GetTargetConfigMap(targetNamespace, configMapName)
 		if err != nil {
-			return fmt.Errorf("get target %s/%s: %w", targetNamespace, configMapName, err)
+			return reconciler.recordError(key, "target_lookup", fmt.Sprintf("get target %s/%s", targetNamespace, configMapName), err)
+		}
+
+		managed := false
+		if targetFound {
+			if targetLabels != nil && targetLabels[core.ManagedLabel] == "true" {
+				managed = true
+			}
+			if targetAnnotations != nil && targetAnnotations[core.SourceAnnotation] == sourceConfigMap {
+				managed = true
+			}
+		}
+
+		if targetFound && !managed {
+			reconciler.recordSkip(key, targetNamespace, configMapName, "target not managed by configpropagator")
+			continue
+		}
+
+		if targetFound && targetAnnotations[core.HashAnnotation] == contentHash {
+			reconciler.recordSkip(key, targetNamespace, configMapName, "already up to date")
+			continue
+		}
+
+		if targetFound && conflictPolicy == core.ConflictSkip {
+			reconciler.recordSkip(key, targetNamespace, configMapName, "conflict policy skip")
+			continue
+		}
+
+		if err := reconciler.clientAdapter.UpsertConfigMap(targetNamespace, configMapName, effectiveData, labels, annotations); err != nil {
+			return reconciler.recordError(key, "upsert", fmt.Sprintf("upsert %s/%s", targetNamespace, configMapName), err)
 		}
 
 		if targetFound {
-			if targetLabels[core.ManagedLabel] != "true" && targetAnnotations[core.SourceAnnotation] != sourceConfigMap {
-				continue
-			}
-
-			if targetAnnotations[core.HashAnnotation] == contentHash {
-				continue
-			}
-
-			if conflictPolicy == core.ConflictSkip {
-				continue
-			}
-		}
-
-		if err := clientAdapter.UpsertConfigMap(targetNamespace, configMapName, effectiveData, labels, annotations); err != nil {
-			return fmt.Errorf("upsert %s/%s: %w", targetNamespace, configMapName, err)
+			reconciler.recordUpdate(key, targetNamespace, configMapName)
+		} else {
+			reconciler.recordCreate(key, targetNamespace, configMapName)
 		}
 	}
 	return nil
@@ -191,7 +243,7 @@ func planTargets(rolloutPlanner *core.RolloutPlanner, key Key, rolloutHash strin
 
 // cleanupDeselected removes or detaches targets in namespaces that were previously managed
 // but are no longer selected by the label selector.
-func cleanupDeselected(clientAdapter adapters.KubeClient, spec *core.ConfigPropagationSpec, currentlySelectedNamespaces []string) error {
+func (reconciler *Reconciler) cleanupDeselected(key Key, spec *core.ConfigPropagationSpec, currentlySelectedNamespaces []string) error {
 	shouldPrune := true
 	if spec.Prune != nil {
 		shouldPrune = *spec.Prune
@@ -199,9 +251,9 @@ func cleanupDeselected(clientAdapter adapters.KubeClient, spec *core.ConfigPropa
 
 	sourceIdentifier := fmt.Sprintf("%s/%s", spec.SourceRef.Namespace, spec.SourceRef.Name)
 
-	managedNamespaces, err := clientAdapter.ListManagedTargetNamespaces(sourceIdentifier, spec.SourceRef.Name)
+	managedNamespaces, err := reconciler.clientAdapter.ListManagedTargetNamespaces(sourceIdentifier, spec.SourceRef.Name)
 	if err != nil {
-		return fmt.Errorf("list managed: %w", err)
+		return reconciler.recordError(key, "list_managed", "list managed targets", err)
 	}
 	// Build set of selected
 	selectedNamespaceSet := map[string]struct{}{}
@@ -216,14 +268,15 @@ func cleanupDeselected(clientAdapter adapters.KubeClient, spec *core.ConfigPropa
 		}
 
 		if shouldPrune {
-			if err := clientAdapter.DeleteConfigMap(namespace, spec.SourceRef.Name); err != nil {
-				return fmt.Errorf("delete %s/%s: %w", namespace, spec.SourceRef.Name, err)
+			if err := reconciler.clientAdapter.DeleteConfigMap(namespace, spec.SourceRef.Name); err != nil {
+				return reconciler.recordError(key, "prune", fmt.Sprintf("delete %s/%s", namespace, spec.SourceRef.Name), err)
 			}
+			reconciler.recordPrune(key, namespace, spec.SourceRef.Name)
 		} else {
 			// Detach: remove managed markers but preserve any other metadata.
-			_, labels, annotations, found, err := clientAdapter.GetTargetConfigMap(namespace, spec.SourceRef.Name)
+			_, labels, annotations, found, err := reconciler.clientAdapter.GetTargetConfigMap(namespace, spec.SourceRef.Name)
 			if err != nil {
-				return fmt.Errorf("get target %s/%s: %w", namespace, spec.SourceRef.Name, err)
+				return reconciler.recordError(key, "target_lookup", fmt.Sprintf("get target %s/%s", namespace, spec.SourceRef.Name), err)
 			}
 
 			if !found {
@@ -234,16 +287,17 @@ func cleanupDeselected(clientAdapter adapters.KubeClient, spec *core.ConfigPropa
 			delete(annotations, core.SourceAnnotation)
 			delete(annotations, core.HashAnnotation)
 
-			if err := clientAdapter.UpdateConfigMapMetadata(namespace, spec.SourceRef.Name, labels, annotations); err != nil {
-				return fmt.Errorf("detach %s/%s: %w", namespace, spec.SourceRef.Name, err)
+			if err := reconciler.clientAdapter.UpdateConfigMapMetadata(namespace, spec.SourceRef.Name, labels, annotations); err != nil {
+				return reconciler.recordError(key, "detach", fmt.Sprintf("detach %s/%s", namespace, spec.SourceRef.Name), err)
 			}
+			reconciler.recordSkip(key, namespace, spec.SourceRef.Name, "detached from management")
 		}
 	}
 	return nil
 }
 
 // Finalize performs full cleanup across all managed targets for this CR.
-func (reconciler *Reconciler) Finalize(spec *core.ConfigPropagationSpec) error {
+func (reconciler *Reconciler) Finalize(key Key, spec *core.ConfigPropagationSpec) error {
 	if spec == nil {
 		return fmt.Errorf("spec is nil")
 	}
@@ -253,5 +307,31 @@ func (reconciler *Reconciler) Finalize(spec *core.ConfigPropagationSpec) error {
 		return err
 	}
 	// Cleanup with empty selection set
-	return cleanupDeselected(reconciler.clientAdapter, spec, []string{})
+	return reconciler.cleanupDeselected(key, spec, []string{})
+}
+
+func (reconciler *Reconciler) recordCreate(key Key, namespace, name string) {
+	reconciler.metricsRecorder.AddPropagations(adapters.MetricsActionCreate, 1)
+	reconciler.eventRecorder.Normalf(key.namespacedName(), eventReasonConfigCreated, "Created ConfigMap %s/%s", namespace, name)
+}
+
+func (reconciler *Reconciler) recordUpdate(key Key, namespace, name string) {
+	reconciler.metricsRecorder.AddPropagations(adapters.MetricsActionUpdate, 1)
+	reconciler.eventRecorder.Normalf(key.namespacedName(), eventReasonConfigUpdated, "Updated ConfigMap %s/%s", namespace, name)
+}
+
+func (reconciler *Reconciler) recordSkip(key Key, namespace, name, reason string) {
+	reconciler.metricsRecorder.AddPropagations(adapters.MetricsActionSkip, 1)
+	reconciler.eventRecorder.Normalf(key.namespacedName(), eventReasonConfigSkipped, "Skipped ConfigMap %s/%s: %s", namespace, name, reason)
+}
+
+func (reconciler *Reconciler) recordPrune(key Key, namespace, name string) {
+	reconciler.metricsRecorder.AddPropagations(adapters.MetricsActionPrune, 1)
+	reconciler.eventRecorder.Normalf(key.namespacedName(), eventReasonConfigPruned, "Pruned ConfigMap %s/%s", namespace, name)
+}
+
+func (reconciler *Reconciler) recordError(key Key, stage, message string, err error) error {
+	reconciler.metricsRecorder.IncError(stage)
+	reconciler.eventRecorder.Warningf(key.namespacedName(), eventReasonConfigError, "%s: %v", message, err)
+	return fmt.Errorf("%s: %w", message, err)
 }

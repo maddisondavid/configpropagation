@@ -81,7 +81,8 @@ func (f *fakePruneClient) UpdateConfigMapMetadata(namespace, name string, labels
 func TestCleanupDeselectedPruneDeletes(t *testing.T) {
 	fc := &fakePruneClient{managed: []string{"a", "b"}}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Prune: boolPtr(true)}
-	if err := cleanupDeselected(fc, s, []string{"a"}); err != nil {
+	r := NewReconciler(fc, nil, nil)
+	if err := r.cleanupDeselected(Key{Namespace: "default", Name: "cp"}, s, []string{"a"}); err != nil {
 		t.Fatalf("cleanup error: %v", err)
 	}
 	if len(fc.deleted) != 1 || fc.deleted[0] != [2]string{"b", "n"} {
@@ -103,7 +104,8 @@ func TestCleanupDeselectedDetachWhenPruneFalse(t *testing.T) {
 		},
 	}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Prune: boolPtr(false)}
-	if err := cleanupDeselected(fc, s, []string{"a"}); err != nil {
+	r := NewReconciler(fc, nil, nil)
+	if err := r.cleanupDeselected(Key{Namespace: "default", Name: "cp"}, s, []string{"a"}); err != nil {
 		t.Fatalf("cleanup error: %v", err)
 	}
 	if len(fc.detached) != 1 {
@@ -127,7 +129,8 @@ func TestCleanupDeselectedDetachWhenPruneFalse(t *testing.T) {
 func TestCleanupDeselectedDetachSkipsWhenTargetMissing(t *testing.T) {
 	fc := &fakePruneClient{managed: []string{"a"}}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Prune: boolPtr(false)}
-	if err := cleanupDeselected(fc, s, []string{}); err != nil {
+	r := NewReconciler(fc, nil, nil)
+	if err := r.cleanupDeselected(Key{Namespace: "default", Name: "cp"}, s, []string{}); err != nil {
 		t.Fatalf("cleanup error: %v", err)
 	}
 	if len(fc.detached) != 0 {
@@ -137,9 +140,9 @@ func TestCleanupDeselectedDetachSkipsWhenTargetMissing(t *testing.T) {
 
 func TestFinalizeCleansAll(t *testing.T) {
 	fc := &fakePruneClient{managed: []string{"a", "b"}}
-	r := NewReconciler(fc)
+	r := NewReconciler(fc, nil, nil)
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Prune: boolPtr(true)}
-	if err := r.Finalize(s); err != nil {
+	if err := r.Finalize(Key{Namespace: "default", Name: "cp"}, s); err != nil {
 		t.Fatalf("finalize error: %v", err)
 	}
 	want := [][2]string{{"a", "n"}, {"b", "n"}}
@@ -151,7 +154,8 @@ func TestFinalizeCleansAll(t *testing.T) {
 func TestCleanupDeselectedNoopsWhenNoneManaged(t *testing.T) {
 	fc := &fakePruneClient{managed: []string{}}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Prune: boolPtr(true)}
-	if err := cleanupDeselected(fc, s, []string{"a"}); err != nil {
+	r := NewReconciler(fc, nil, nil)
+	if err := r.cleanupDeselected(Key{Namespace: "default", Name: "cp"}, s, []string{"a"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(fc.deleted) != 0 || len(fc.detached) != 0 {
