@@ -10,7 +10,7 @@ Secure, compliant installation enabling multi-namespace operations (sections 11,
 - RBAC rules scoped to: read source ns/ConfigMap; list/watch Namespaces; manage ConfigMaps in target Namespaces; manage CRD/CRs; Events.
 - Deployment with configurable flags (batch size, resync, metrics addr) exposed via Helm values.
 - Package ships with an installation story that reuses the existing Dockerfile and Helm chart.
-- Provide a Stafford configuration for local development installs (namespace scoping, Helm overrides, image tags).
+- Provide a Skaffold configuration file for local development installs (namespace scoping, Helm overrides, image tags).
 
 ## Implementation
 - RBAC manifests: `configs/rbac/role.yaml`, `rolebinding.yaml`, `clusterrole.yaml`, `clusterrolebinding.yaml` (as needed), `serviceaccount.yaml`; mirrored as Helm templates under `charts/configpropagation/templates/rbac-*.yaml`.
