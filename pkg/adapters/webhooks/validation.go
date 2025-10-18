@@ -39,6 +39,7 @@ func ValidateConfigPropagation(newSpec, oldSpec *core.ConfigPropagationSpec) err
 	return nil
 }
 
+// isSelectorWideOpen reports whether the selector places no constraints on namespaces.
 func isSelectorWideOpen(sel *core.LabelSelector) bool {
 	if sel == nil {
 		return true

@@ -66,6 +66,7 @@ func DefaultSpec(spec *ConfigPropagationSpec) {
 	}
 }
 
+// defaultBatchSize determines the rollout batch size from environment defaults.
 func defaultBatchSize() int32 {
 	if environmentValue := os.Getenv("BATCH_SIZE"); environmentValue != "" {
 		if parsed, err := strconv.Atoi(environmentValue); err == nil && parsed >= 1 {

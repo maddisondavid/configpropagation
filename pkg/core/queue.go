@@ -11,10 +11,12 @@ type WorkQueue[T comparable] struct {
 	items []T
 }
 
+// NewWorkQueue constructs an empty WorkQueue.
 func NewWorkQueue[T comparable]() *WorkQueue[T] {
 	return &WorkQueue[T]{set: make(map[T]struct{}), items: make([]T, 0)}
 }
 
+// Add enqueues an item if it is not already present.
 func (queue *WorkQueue[T]) Add(item T) {
 	queue.mutex.Lock()
 	defer queue.mutex.Unlock()
@@ -27,6 +29,7 @@ func (queue *WorkQueue[T]) Add(item T) {
 	queue.items = append(queue.items, item)
 }
 
+// Get dequeues the next item, returning false when the queue is empty.
 func (queue *WorkQueue[T]) Get() (T, bool) {
 	queue.mutex.Lock()
 	defer queue.mutex.Unlock()
@@ -45,6 +48,7 @@ func (queue *WorkQueue[T]) Get() (T, bool) {
 	return item, true
 }
 
+// Len returns the number of queued items.
 func (queue *WorkQueue[T]) Len() int {
 	queue.mutex.Lock()
 	defer queue.mutex.Unlock()

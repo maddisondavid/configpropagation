@@ -38,6 +38,7 @@ type ConfigPropagationList struct {
 	Items           []ConfigPropagation `json:"items"`
 }
 
+// init registers the ConfigPropagation types with the scheme builder.
 func init() {
 	SchemeBuilder.Register(&ConfigPropagation{}, &ConfigPropagationList{})
 }

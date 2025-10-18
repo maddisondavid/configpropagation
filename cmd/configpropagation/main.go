@@ -24,11 +24,13 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
+// init registers the Kubernetes API types used by the manager.
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(configv1alpha1.AddToScheme(scheme))
 }
 
+// main configures and starts the controller manager process.
 func main() {
 	var metricsAddress string
 	var probeAddress string
@@ -91,6 +93,7 @@ func main() {
 	}
 }
 
+// defaultEnableWebhooks determines whether admission webhooks should run by default.
 func defaultEnableWebhooks() bool {
 	environmentValue := os.Getenv("ENABLE_WEBHOOKS")
 

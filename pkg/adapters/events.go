@@ -26,8 +26,10 @@ func NewNoopEventRecorder() EventRecorder {
 
 type noopEventRecorder struct{}
 
+// Normalf satisfies EventRecorder while intentionally discarding events.
 func (noopEventRecorder) Normalf(core.NamespacedName, string, string, ...interface{}) {}
 
+// Warningf satisfies EventRecorder while intentionally discarding events.
 func (noopEventRecorder) Warningf(core.NamespacedName, string, string, ...interface{}) {}
 
 // NewControllerRuntimeEventRecorder wraps a controller-runtime EventRecorder.
@@ -42,14 +44,17 @@ type controllerRuntimeEventRecorder struct {
 	recorder record.EventRecorder
 }
 
+// Normalf emits a formatted Normal event through the wrapped recorder.
 func (eventRecorder *controllerRuntimeEventRecorder) Normalf(name core.NamespacedName, reason, messageFmt string, args ...interface{}) {
 	eventRecorder.emit(name, corev1.EventTypeNormal, reason, messageFmt, args...)
 }
 
+// Warningf emits a formatted Warning event through the wrapped recorder.
 func (eventRecorder *controllerRuntimeEventRecorder) Warningf(name core.NamespacedName, reason, messageFmt string, args ...interface{}) {
 	eventRecorder.emit(name, corev1.EventTypeWarning, reason, messageFmt, args...)
 }
 
+// emit sends the event to Kubernetes if a minimal object can be constructed.
 func (eventRecorder *controllerRuntimeEventRecorder) emit(name core.NamespacedName, eventType, reason, messageFmt string, args ...interface{}) {
 	obj := minimalConfigPropagationObject(name)
 	if obj == nil {
@@ -58,6 +63,7 @@ func (eventRecorder *controllerRuntimeEventRecorder) emit(name core.NamespacedNa
 	eventRecorder.recorder.Eventf(obj, eventType, reason, messageFmt, args...)
 }
 
+// minimalConfigPropagationObject constructs a lightweight object for event emission.
 func minimalConfigPropagationObject(name core.NamespacedName) client.Object {
 	if name.Name == "" {
 		return nil

@@ -211,6 +211,7 @@ func (configPropagationList *ConfigPropagationList) DeepCopyObject() runtime.Obj
 	return configPropagationList.DeepCopy()
 }
 
+// deepCopySpec creates a deep copy of the provided spec to avoid sharing mutable fields.
 func deepCopySpec(source *core.ConfigPropagationSpec) core.ConfigPropagationSpec {
 	if source == nil {
 		return core.ConfigPropagationSpec{}
@@ -273,6 +274,7 @@ func deepCopySpec(source *core.ConfigPropagationSpec) core.ConfigPropagationSpec
 	return copiedSpec
 }
 
+// deepCopyStatus creates a deep copy of the provided status structure.
 func deepCopyStatus(source *core.ConfigPropagationStatus) core.ConfigPropagationStatus {
 	if source == nil {
 		return core.ConfigPropagationStatus{}
