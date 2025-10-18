@@ -21,6 +21,17 @@ type Reconciler struct {
 	rolloutPlanner *core.RolloutPlanner
 }
 
+type syncSummary struct {
+	syncedNamespaces  []string
+	createdNamespaces []string
+	updatedNamespaces []string
+	skippedOutOfSync  []core.OutOfSyncItem
+}
+
+type cleanupSummary struct {
+	prunedNamespaces []string
+}
+
 // OnCRChange enqueues a reconcile when the CR changes.
 func (reconciler *Reconciler) OnCRChange(namespace, name string) {
 	reconciler.workQueue.Add(Key{Namespace: namespace, Name: name})
@@ -83,27 +94,35 @@ func reconcileImpl(clientAdapter adapters.KubeClient, rolloutPlanner *core.Rollo
 
 	plannedNamespaces, completedBefore := planTargets(rolloutPlanner, key, rolloutHash, targetNamespaces, spec.Strategy.Type, batchSize)
 
-	err = syncTargets(clientAdapter, plannedNamespaces, spec.SourceRef.Name, effectiveData, rolloutHash, spec.SourceRef.Namespace, spec.ConflictPolicy)
+	summary, err := syncTargets(clientAdapter, plannedNamespaces, spec.SourceRef.Name, effectiveData, rolloutHash, spec.SourceRef.Namespace, spec.ConflictPolicy)
 	if err != nil {
 		return core.RolloutResult{}, err
 	}
 
 	completedTargetCount := completedBefore
 	if spec.Strategy.Type == core.StrategyRolling && len(plannedNamespaces) > 0 {
-		completedTargetCount = rolloutPlanner.MarkCompleted(core.NamespacedName{Namespace: key.Namespace, Name: key.Name}, rolloutHash, plannedNamespaces)
+		completedTargetCount = rolloutPlanner.MarkCompleted(core.NamespacedName{Namespace: key.Namespace, Name: key.Name}, rolloutHash, summary.syncedNamespaces)
 	}
 	if spec.Strategy.Type == core.StrategyImmediate {
 		rolloutPlanner.Forget(core.NamespacedName{Namespace: key.Namespace, Name: key.Name})
-		completedTargetCount = len(targetNamespaces)
+		completedTargetCount = len(summary.syncedNamespaces)
 	}
 	// Cleanup deselected namespaces per prune policy
-	if err := cleanupDeselected(clientAdapter, spec, targetNamespaces); err != nil {
+	cleanup, err := cleanupDeselected(clientAdapter, spec, targetNamespaces)
+	if err != nil {
 		return core.RolloutResult{}, err
 	}
 	result := core.RolloutResult{
 		Planned:        plannedNamespaces,
 		TotalTargets:   len(targetNamespaces),
 		CompletedCount: completedTargetCount,
+		Counters: core.PropagationCounters{
+			Created: len(summary.createdNamespaces),
+			Updated: len(summary.updatedNamespaces),
+			Skipped: len(summary.skippedOutOfSync),
+			Pruned:  len(cleanup.prunedNamespaces),
+		},
+		OutOfSync: append([]core.OutOfSyncItem(nil), summary.skippedOutOfSync...),
 	}
 	return result, nil
 }
@@ -148,7 +167,7 @@ func listTargets(clientAdapter adapters.KubeClient, selector *core.LabelSelector
 	return clientAdapter.ListNamespacesBySelector(nilIfEmpty(selector.MatchLabels), selectorRequirements)
 }
 
-func syncTargets(clientAdapter adapters.KubeClient, plannedNamespaces []string, configMapName string, effectiveData map[string]string, contentHash string, sourceNamespace string, conflictPolicy string) error {
+func syncTargets(clientAdapter adapters.KubeClient, plannedNamespaces []string, configMapName string, effectiveData map[string]string, contentHash string, sourceNamespace string, conflictPolicy string) (syncSummary, error) {
 	labels := map[string]string{core.ManagedLabel: "true"}
 	sourceConfigMap := fmt.Sprintf("%s/%s", sourceNamespace, configMapName)
 
@@ -157,10 +176,12 @@ func syncTargets(clientAdapter adapters.KubeClient, plannedNamespaces []string, 
 		core.HashAnnotation:   contentHash,
 	}
 
+	summary := syncSummary{}
+
 	for _, targetNamespace := range plannedNamespaces {
 		_, targetLabels, targetAnnotations, targetFound, err := clientAdapter.GetTargetConfigMap(targetNamespace, configMapName)
 		if err != nil {
-			return fmt.Errorf("get target %s/%s: %w", targetNamespace, configMapName, err)
+			return syncSummary{}, fmt.Errorf("get target %s/%s: %w", targetNamespace, configMapName, err)
 		}
 
 		if targetFound {
@@ -169,19 +190,34 @@ func syncTargets(clientAdapter adapters.KubeClient, plannedNamespaces []string, 
 			}
 
 			if targetAnnotations[core.HashAnnotation] == contentHash {
+				summary.syncedNamespaces = append(summary.syncedNamespaces, targetNamespace)
 				continue
 			}
 
 			if conflictPolicy == core.ConflictSkip {
+				summary.skippedOutOfSync = append(summary.skippedOutOfSync, core.OutOfSyncItem{
+					Namespace: targetNamespace,
+					Reason:    "ConflictSkipped",
+					Message:   fmt.Sprintf("existing ConfigMap differs and conflictPolicy=%s", core.ConflictSkip),
+				})
 				continue
 			}
 		}
 
 		if err := clientAdapter.UpsertConfigMap(targetNamespace, configMapName, effectiveData, labels, annotations); err != nil {
-			return fmt.Errorf("upsert %s/%s: %w", targetNamespace, configMapName, err)
+			return syncSummary{}, fmt.Errorf("upsert %s/%s: %w", targetNamespace, configMapName, err)
 		}
+
+		summary.syncedNamespaces = append(summary.syncedNamespaces, targetNamespace)
+
+		if targetFound {
+			summary.updatedNamespaces = append(summary.updatedNamespaces, targetNamespace)
+			continue
+		}
+
+		summary.createdNamespaces = append(summary.createdNamespaces, targetNamespace)
 	}
-	return nil
+	return summary, nil
 }
 
 func planTargets(rolloutPlanner *core.RolloutPlanner, key Key, rolloutHash string, candidateNamespaces []string, strategy string, batchSize int32) ([]string, int) {
@@ -191,7 +227,7 @@ func planTargets(rolloutPlanner *core.RolloutPlanner, key Key, rolloutHash strin
 
 // cleanupDeselected removes or detaches targets in namespaces that were previously managed
 // but are no longer selected by the label selector.
-func cleanupDeselected(clientAdapter adapters.KubeClient, spec *core.ConfigPropagationSpec, currentlySelectedNamespaces []string) error {
+func cleanupDeselected(clientAdapter adapters.KubeClient, spec *core.ConfigPropagationSpec, currentlySelectedNamespaces []string) (cleanupSummary, error) {
 	shouldPrune := true
 	if spec.Prune != nil {
 		shouldPrune = *spec.Prune
@@ -199,9 +235,11 @@ func cleanupDeselected(clientAdapter adapters.KubeClient, spec *core.ConfigPropa
 
 	sourceIdentifier := fmt.Sprintf("%s/%s", spec.SourceRef.Namespace, spec.SourceRef.Name)
 
+	summary := cleanupSummary{}
+
 	managedNamespaces, err := clientAdapter.ListManagedTargetNamespaces(sourceIdentifier, spec.SourceRef.Name)
 	if err != nil {
-		return fmt.Errorf("list managed: %w", err)
+		return cleanupSummary{}, fmt.Errorf("list managed: %w", err)
 	}
 	// Build set of selected
 	selectedNamespaceSet := map[string]struct{}{}
@@ -217,19 +255,21 @@ func cleanupDeselected(clientAdapter adapters.KubeClient, spec *core.ConfigPropa
 
 		if shouldPrune {
 			if err := clientAdapter.DeleteConfigMap(namespace, spec.SourceRef.Name); err != nil {
-				return fmt.Errorf("delete %s/%s: %w", namespace, spec.SourceRef.Name, err)
+				return cleanupSummary{}, fmt.Errorf("delete %s/%s: %w", namespace, spec.SourceRef.Name, err)
 			}
+
+			summary.prunedNamespaces = append(summary.prunedNamespaces, namespace)
 		} else {
 			// Detach: remove managed markers
 			labels := map[string]string{}
 			annotations := map[string]string{}
 
 			if err := clientAdapter.UpdateConfigMapMetadata(namespace, spec.SourceRef.Name, labels, annotations); err != nil {
-				return fmt.Errorf("detach %s/%s: %w", namespace, spec.SourceRef.Name, err)
+				return cleanupSummary{}, fmt.Errorf("detach %s/%s: %w", namespace, spec.SourceRef.Name, err)
 			}
 		}
 	}
-	return nil
+	return summary, nil
 }
 
 // Finalize performs full cleanup across all managed targets for this CR.
@@ -243,5 +283,6 @@ func (reconciler *Reconciler) Finalize(spec *core.ConfigPropagationSpec) error {
 		return err
 	}
 	// Cleanup with empty selection set
-	return cleanupDeselected(reconciler.clientAdapter, spec, []string{})
+	_, err := cleanupDeselected(reconciler.clientAdapter, spec, []string{})
+	return err
 }

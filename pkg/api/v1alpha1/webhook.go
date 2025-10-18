@@ -65,25 +65,73 @@ func (configPropagation *ConfigPropagation) ApplyRolloutStatus(result core.Rollo
 	}
 
 	configPropagation.Status.OutOfSyncCount = int32(pendingCount)
-	configPropagation.Status.OutOfSync = nil
-
-	conditionReason := "Reconciled"
-	conditionMessage := fmt.Sprintf("propagated to %d/%d namespaces", result.CompletedCount, result.TotalTargets)
-	conditionStatus := "True"
-
-	if pendingCount > 0 {
-		conditionReason = "RollingUpdate"
-		conditionMessage = fmt.Sprintf("propagated to %d/%d namespaces (batch of %d)", result.CompletedCount, result.TotalTargets, len(result.Planned))
-		conditionStatus = "False"
+	if result.OutOfSync != nil {
+		configPropagation.Status.OutOfSync = append([]core.OutOfSyncItem(nil), result.OutOfSync...)
+	} else {
+		configPropagation.Status.OutOfSync = nil
 	}
 
-	configPropagation.Status.Conditions = []core.Condition{{
-		Type:               core.CondReady,
-		Status:             conditionStatus,
-		Reason:             conditionReason,
-		Message:            conditionMessage,
-		LastTransitionTime: currentTime,
-	}}
+	readyStatus := "True"
+	readyReason := "Reconciled"
+	readyMessage := fmt.Sprintf("propagated to %d/%d namespaces", result.CompletedCount, result.TotalTargets)
+
+	progressingStatus := "False"
+	progressingReason := "Idle"
+	progressingMessage := "reconciliation complete"
+
+	degradedStatus := "False"
+	degradedReason := "Healthy"
+	degradedMessage := "targets in sync"
+
+	if len(result.OutOfSync) > 0 {
+		readyStatus = "False"
+		readyReason = "OutOfSync"
+		readyMessage = fmt.Sprintf("%d namespaces remain out of sync", len(result.OutOfSync))
+
+		progressingStatus = "False"
+		progressingReason = "Blocked"
+		progressingMessage = "waiting for conflicts to resolve"
+
+		degradedStatus = "True"
+		degradedReason = "OutOfSync"
+		degradedMessage = readyMessage
+	} else if pendingCount > 0 {
+		readyStatus = "False"
+		readyReason = "RollingUpdate"
+		readyMessage = fmt.Sprintf("propagated to %d/%d namespaces (batch of %d)", result.CompletedCount, result.TotalTargets, len(result.Planned))
+
+		progressingStatus = "True"
+		progressingReason = "RollingUpdate"
+		progressingMessage = readyMessage
+
+		degradedStatus = "False"
+		degradedReason = "Healthy"
+		degradedMessage = "rollout in progress"
+	}
+
+	configPropagation.Status.Conditions = []core.Condition{
+		{
+			Type:               core.CondReady,
+			Status:             readyStatus,
+			Reason:             readyReason,
+			Message:            readyMessage,
+			LastTransitionTime: currentTime,
+		},
+		{
+			Type:               core.CondProgressing,
+			Status:             progressingStatus,
+			Reason:             progressingReason,
+			Message:            progressingMessage,
+			LastTransitionTime: currentTime,
+		},
+		{
+			Type:               core.CondDegraded,
+			Status:             degradedStatus,
+			Reason:             degradedReason,
+			Message:            degradedMessage,
+			LastTransitionTime: currentTime,
+		},
+	}
 }
 
 // DeepCopyInto copies the receiver into out.

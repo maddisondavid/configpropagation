@@ -42,8 +42,12 @@ func (f *fakePruneClient) UpdateConfigMapMetadata(namespace, name string, labels
 func TestCleanupDeselectedPruneDeletes(t *testing.T) {
 	fc := &fakePruneClient{managed: []string{"a", "b"}}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Prune: boolPtr(true)}
-	if err := cleanupDeselected(fc, s, []string{"a"}); err != nil {
+	summary, err := cleanupDeselected(fc, s, []string{"a"})
+	if err != nil {
 		t.Fatalf("cleanup error: %v", err)
+	}
+	if !reflect.DeepEqual(summary.prunedNamespaces, []string{"b"}) {
+		t.Fatalf("expected summary with pruned b, got %+v", summary)
 	}
 	if len(fc.deleted) != 1 || fc.deleted[0] != [2]string{"b", "n"} {
 		t.Fatalf("expected delete b/n, got %+v", fc.deleted)
@@ -56,8 +60,12 @@ func TestCleanupDeselectedPruneDeletes(t *testing.T) {
 func TestCleanupDeselectedDetachWhenPruneFalse(t *testing.T) {
 	fc := &fakePruneClient{managed: []string{"a", "b"}}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Prune: boolPtr(false)}
-	if err := cleanupDeselected(fc, s, []string{"a"}); err != nil {
+	summary, err := cleanupDeselected(fc, s, []string{"a"})
+	if err != nil {
 		t.Fatalf("cleanup error: %v", err)
+	}
+	if len(summary.prunedNamespaces) != 0 {
+		t.Fatalf("expected no pruned namespaces when pruning disabled, got %+v", summary)
 	}
 	if len(fc.detached) != 1 || fc.detached[0] != [2]string{"b", "n"} {
 		t.Fatalf("expected detach b/n, got %+v", fc.detached)
@@ -83,7 +91,7 @@ func TestFinalizeCleansAll(t *testing.T) {
 func TestCleanupDeselectedNoopsWhenNoneManaged(t *testing.T) {
 	fc := &fakePruneClient{managed: []string{}}
 	s := &core.ConfigPropagationSpec{SourceRef: core.ObjectRef{Namespace: "s", Name: "n"}, NamespaceSelector: &core.LabelSelector{}, Prune: boolPtr(true)}
-	if err := cleanupDeselected(fc, s, []string{"a"}); err != nil {
+	if _, err := cleanupDeselected(fc, s, []string{"a"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(fc.deleted) != 0 || len(fc.detached) != 0 {

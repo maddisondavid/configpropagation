@@ -13,6 +13,8 @@ type RolloutResult struct {
 	Planned        []string
 	TotalTargets   int
 	CompletedCount int
+	Counters       PropagationCounters
+	OutOfSync      []OutOfSyncItem
 }
 
 // RolloutPlanner tracks per-object rollout progress for rolling strategies.

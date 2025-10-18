@@ -46,6 +46,14 @@ type ConfigPropagationStatus struct {
 	LastSyncTime   string          `json:"lastSyncTime,omitempty"` // RFC3339
 }
 
+// PropagationCounters capture how many targets were created, updated, skipped, or pruned in a reconciliation.
+type PropagationCounters struct {
+	Created int
+	Updated int
+	Skipped int
+	Pruned  int
+}
+
 // Condition is a standard status condition.
 type Condition struct {
 	Type               string `json:"type"`

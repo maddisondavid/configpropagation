@@ -76,6 +76,9 @@ func TestReconcilerPlanImmediate(t *testing.T) {
 	if result.CompletedCount != len(expectedNamespaces) || result.TotalTargets != len(expectedNamespaces) {
 		t.Fatalf("expected all targets completed, got %+v", result)
 	}
+	if result.Counters.Created != len(expectedNamespaces) {
+		t.Fatalf("expected created counter to match, got %+v", result.Counters)
+	}
 }
 
 func TestReconcilerPlanRollingBatch(t *testing.T) {
@@ -114,6 +117,9 @@ func TestReconcilerPlanRollingBatch(t *testing.T) {
 	}
 	if nextResult.CompletedCount != len(expectedBatch)+len(expectedRemainingBatch) {
 		t.Fatalf("expected completed count to accumulate, got %+v", nextResult)
+	}
+	if nextResult.Counters.Updated == 0 && nextResult.Counters.Created == 0 {
+		t.Fatalf("expected counters to record work, got %+v", nextResult.Counters)
 	}
 }
 
@@ -167,12 +173,16 @@ func TestHelpersComputeEffectiveAndListTargetsAndSyncTargets(t *testing.T) {
 	}
 	// syncTargets executes loop and returns nil
 	hashValue := core.HashData(map[string]string{"k": "v"})
-	if err := syncTargets(fakeKubeClient, []string{"ns"}, "name", map[string]string{"k": "v"}, hashValue, "src", core.ConflictOverwrite); err != nil {
+	summary, err := syncTargets(fakeKubeClient, []string{"ns"}, "name", map[string]string{"k": "v"}, hashValue, "src", core.ConflictOverwrite)
+	if err != nil {
 		t.Fatalf("syncTargets error: %v", err)
+	}
+	if len(summary.createdNamespaces) != 1 || summary.createdNamespaces[0] != "ns" {
+		t.Fatalf("expected created ns, got %+v", summary)
 	}
 	// syncTargets error path
 	failingUpsertClient := &badUpsert{*fakeKubeClient}
-	if err := syncTargets(failingUpsertClient, []string{"ns"}, "name", map[string]string{"k": "v"}, hashValue, "src", core.ConflictOverwrite); err == nil {
+	if _, err := syncTargets(failingUpsertClient, []string{"ns"}, "name", map[string]string{"k": "v"}, hashValue, "src", core.ConflictOverwrite); err == nil {
 		t.Fatalf("expected syncTargets to error on upsert")
 	}
 }
