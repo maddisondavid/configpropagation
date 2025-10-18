@@ -52,6 +52,14 @@ func (r *Recorder) TargetPruned(obj client.Object, namespace, name string) {
 	r.recorder.Eventf(obj, corev1.EventTypeNormal, "TargetPruned", "ConfigMap %s/%s pruned", namespace, name)
 }
 
+// TargetDetached records an event indicating a previously managed target was detached.
+func (r *Recorder) TargetDetached(obj client.Object, namespace, name string) {
+	if r == nil || r.recorder == nil {
+		return
+	}
+	r.recorder.Eventf(obj, corev1.EventTypeNormal, "TargetDetached", "ConfigMap %s/%s detached", namespace, name)
+}
+
 // Error records an event indicating reconciliation failed.
 func (r *Recorder) Error(obj client.Object, err error) {
 	if r == nil || r.recorder == nil || err == nil {

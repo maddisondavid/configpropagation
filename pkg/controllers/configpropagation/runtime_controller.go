@@ -115,6 +115,9 @@ func (c *ConfigPropagationController) emitTargetEvents(cp *configv1alpha1.Config
 	for _, ns := range result.PrunedTargets {
 		c.events.TargetPruned(cp, ns, name)
 	}
+	for _, ns := range result.DetachedTargets {
+		c.events.TargetDetached(cp, ns, name)
+	}
 }
 
 // SetupWithManager registers the controller with the provided manager.

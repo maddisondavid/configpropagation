@@ -45,10 +45,11 @@ func TestRecorderHelpers(t *testing.T) {
 	rec.TargetUpdated(obj, "ns-b", "cfg")
 	rec.TargetSkipped(obj, "ns-c", "cfg", "Conflict", "skipped")
 	rec.TargetPruned(obj, "ns-d", "cfg")
+	rec.TargetDetached(obj, "ns-e", "cfg")
 	rec.Error(obj, fmt.Errorf("boom"))
 
-	if len(fake.events) != 5 {
-		t.Fatalf("expected 5 events, got %d", len(fake.events))
+	if len(fake.events) != 6 {
+		t.Fatalf("expected 6 events, got %d", len(fake.events))
 	}
 	if fake.events[0].reason != "TargetCreated" || fake.events[0].eventType != corev1.EventTypeNormal {
 		t.Fatalf("unexpected create event: %+v", fake.events[0])
@@ -56,8 +57,11 @@ func TestRecorderHelpers(t *testing.T) {
 	if fake.events[2].eventType != corev1.EventTypeWarning || fake.events[2].reason != "Conflict" {
 		t.Fatalf("expected warning skip event, got %+v", fake.events[2])
 	}
-	if fake.events[4].reason != "ReconcileError" {
-		t.Fatalf("expected error reason, got %+v", fake.events[4])
+	if fake.events[4].reason != "TargetDetached" || fake.events[4].eventType != corev1.EventTypeNormal {
+		t.Fatalf("expected detached event, got %+v", fake.events[4])
+	}
+	if fake.events[5].reason != "ReconcileError" {
+		t.Fatalf("expected error reason, got %+v", fake.events[5])
 	}
 }
 
