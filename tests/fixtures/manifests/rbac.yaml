@@ -1,0 +1,73 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: configpropagation-controller
+  namespace: configpropagation-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: configpropagation-leader-election
+  namespace: configpropagation-system
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: configpropagation-manager
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["configpropagator.platform.example.com"]
+    resources: ["configpropagations"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["configpropagator.platform.example.com"]
+    resources: ["configpropagations/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["configpropagator.platform.example.com"]
+    resources: ["configpropagations/finalizers"]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: configpropagation-leader-election
+  namespace: configpropagation-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: configpropagation-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: configpropagation-controller
+    namespace: configpropagation-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: configpropagation-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: configpropagation-manager
+subjects:
+  - kind: ServiceAccount
+    name: configpropagation-controller
+    namespace: configpropagation-system

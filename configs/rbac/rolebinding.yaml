@@ -1,0 +1,16 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: configpropagation-leader-election
+  namespace: configpropagation-system
+  labels:
+    app.kubernetes.io/name: configpropagation
+    app.kubernetes.io/component: controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: configpropagation-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: configpropagation-controller
+    namespace: configpropagation-system

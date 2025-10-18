@@ -38,10 +38,12 @@ spec:
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- if and .Values.metrics.enabled .Values.metrics.port }}
           ports:
             - name: http
               containerPort: {{ .Values.metrics.port }}
               protocol: TCP
+          {{- end }}
           {{- if .Values.livenessProbe.enabled }}
           livenessProbe:
             {{- toYaml (omit .Values.livenessProbe "enabled") | nindent 12 }}
@@ -51,6 +53,8 @@ spec:
             {{- toYaml (omit .Values.readinessProbe "enabled") | nindent 12 }}
           {{- end }}
           env:
+            - name: ENABLE_WEBHOOKS
+              value: "{{ ternary "true" "false" .Values.webhook.enabled }}"
             {{- if not (eq (printf "%v" .Values.env.batchSize) "") }}
             - name: BATCH_SIZE
               value: "{{ .Values.env.batchSize }}"
@@ -67,8 +71,11 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           args:
-            {{- if .Values.metrics.enabled }}
-            - --metrics-addr=:{{ .Values.metrics.port }}
+            - --metrics-bind-address={{ .Values.metrics.bindAddress }}
+            - --health-probe-bind-address={{ .Values.healthProbe.bindAddress }}
+            - --webhook-port={{ .Values.webhook.port }}
+            {{- if .Values.leaderElection.enabled }}
+            - --leader-elect
             {{- end }}
             {{- with .Values.args }}
             {{- toYaml . | nindent 12 }}
