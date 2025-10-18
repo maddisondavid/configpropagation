@@ -169,13 +169,17 @@ func TestHelpersComputeEffectiveAndListTargetsAndSyncTargets(t *testing.T) {
 	// syncTargets executes loop and returns nil
 	hashValue := core.HashData(map[string]string{"k": "v"})
 	reconciler := NewReconciler(fakeKubeClient, nil, nil)
-	if err := reconciler.syncTargets(Key{Namespace: "default", Name: "cp"}, []string{"ns"}, "name", map[string]string{"k": "v"}, hashValue, "src", core.ConflictOverwrite); err != nil {
+	summary, err := reconciler.syncTargets(Key{Namespace: "default", Name: "cp"}, []string{"ns"}, "name", map[string]string{"k": "v"}, hashValue, "src", core.ConflictOverwrite)
+	if err != nil {
 		t.Fatalf("syncTargets error: %v", err)
+	}
+	if len(summary.completed) != 1 || len(summary.outOfSync) != 0 {
+		t.Fatalf("unexpected sync summary: %+v", summary)
 	}
 	// syncTargets error path
 	failingUpsertClient := &badUpsert{*fakeKubeClient}
 	failingReconciler := NewReconciler(failingUpsertClient, nil, nil)
-	if err := failingReconciler.syncTargets(Key{Namespace: "default", Name: "cp"}, []string{"ns"}, "name", map[string]string{"k": "v"}, hashValue, "src", core.ConflictOverwrite); err == nil {
+	if _, err := failingReconciler.syncTargets(Key{Namespace: "default", Name: "cp"}, []string{"ns"}, "name", map[string]string{"k": "v"}, hashValue, "src", core.ConflictOverwrite); err == nil {
 		t.Fatalf("expected syncTargets to error on upsert")
 	}
 }
@@ -397,7 +401,7 @@ func TestReconcilerEmitsEventsAndMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected reconcile error: %v", err)
 	}
-	if result.TotalTargets != 3 || result.CompletedCount != 3 {
+	if result.TotalTargets != 3 || result.CompletedCount != 3 || len(result.OutOfSync) != 0 {
 		t.Fatalf("unexpected rollout result: %+v", result)
 	}
 

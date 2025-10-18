@@ -1,6 +1,9 @@
 package core
 
-import "sync"
+import (
+	"sort"
+	"sync"
+)
 
 // NamespacedName identifies a namespaced Kubernetes resource.
 type NamespacedName struct {
@@ -13,6 +16,7 @@ type RolloutResult struct {
 	Planned        []string
 	TotalTargets   int
 	CompletedCount int
+	OutOfSync      []OutOfSyncItem
 }
 
 // RolloutPlanner tracks per-object rollout progress for rolling strategies.
@@ -100,6 +104,25 @@ func (planner *RolloutPlanner) MarkCompleted(identifier NamespacedName, desiredH
 	}
 
 	return len(state.completed)
+}
+
+// CompletedNamespaces returns the namespaces currently marked as completed for the identifier.
+func (planner *RolloutPlanner) CompletedNamespaces(identifier NamespacedName, desiredHash string) []string {
+	planner.mutex.Lock()
+	defer planner.mutex.Unlock()
+
+	state, exists := planner.states[identifier]
+	if !exists || state.hash != desiredHash {
+		return nil
+	}
+
+	completed := make([]string, 0, len(state.completed))
+	for namespace := range state.completed {
+		completed = append(completed, namespace)
+	}
+
+	sort.Strings(completed)
+	return completed
 }
 
 // Forget removes any stored rollout state for the provided object.

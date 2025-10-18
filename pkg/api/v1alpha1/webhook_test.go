@@ -14,6 +14,9 @@ func TestApplyRolloutStatusImmediate(t *testing.T) {
 	if cp.Status.TargetCount != 2 || cp.Status.SyncedCount != 2 || cp.Status.OutOfSyncCount != 0 {
 		t.Fatalf("unexpected status counters: %+v", cp.Status)
 	}
+	if cp.Status.OutOfSync != nil {
+		t.Fatalf("expected no outOfSync entries, got %+v", cp.Status.OutOfSync)
+	}
 	if len(cp.Status.Conditions) != 3 {
 		t.Fatalf("expected three conditions, got %+v", cp.Status.Conditions)
 	}
@@ -33,10 +36,22 @@ func TestApplyRolloutStatusImmediate(t *testing.T) {
 
 func TestApplyRolloutStatusRolling(t *testing.T) {
 	cp := &ConfigPropagation{}
-	result := core.RolloutResult{Planned: []string{"batch"}, TotalTargets: 5, CompletedCount: 2}
+	result := core.RolloutResult{
+		Planned:        []string{"batch"},
+		TotalTargets:   5,
+		CompletedCount: 2,
+		OutOfSync: []core.OutOfSyncItem{
+			{Namespace: "ns-a", Reason: "PendingRollout"},
+			{Namespace: "ns-b", Reason: "PendingRollout"},
+			{Namespace: "ns-c", Reason: "PendingRollout"},
+		},
+	}
 	cp.ApplyRolloutStatus(result)
 	if cp.Status.TargetCount != 5 || cp.Status.SyncedCount != 2 || cp.Status.OutOfSyncCount != 3 {
 		t.Fatalf("unexpected status counters for rolling: %+v", cp.Status)
+	}
+	if len(cp.Status.OutOfSync) != 3 || cp.Status.OutOfSync[0].Namespace != "ns-a" {
+		t.Fatalf("expected outOfSync details to be preserved, got %+v", cp.Status.OutOfSync)
 	}
 	ready := conditionByType(t, cp.Status.Conditions, core.CondReady)
 	if ready.Status != "False" || ready.Reason != "RollingUpdate" {
