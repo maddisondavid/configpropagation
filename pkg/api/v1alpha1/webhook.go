@@ -66,24 +66,75 @@ func (configPropagation *ConfigPropagation) ApplyRolloutStatus(result core.Rollo
 
 	configPropagation.Status.OutOfSyncCount = int32(pendingCount)
 	configPropagation.Status.OutOfSync = nil
-
-	conditionReason := "Reconciled"
-	conditionMessage := fmt.Sprintf("propagated to %d/%d namespaces", result.CompletedCount, result.TotalTargets)
-	conditionStatus := "True"
-
-	if pendingCount > 0 {
-		conditionReason = "RollingUpdate"
-		conditionMessage = fmt.Sprintf("propagated to %d/%d namespaces (batch of %d)", result.CompletedCount, result.TotalTargets, len(result.Planned))
-		conditionStatus = "False"
+	readyCondition := core.Condition{
+		Type:               core.CondReady,
+		LastTransitionTime: currentTime,
+	}
+	progressingCondition := core.Condition{
+		Type:               core.CondProgressing,
+		LastTransitionTime: currentTime,
+	}
+	degradedCondition := core.Condition{
+		Type:               core.CondDegraded,
+		Status:             "False",
+		Reason:             "Healthy",
+		Message:            "no reconcile errors detected",
+		LastTransitionTime: currentTime,
 	}
 
-	configPropagation.Status.Conditions = []core.Condition{{
-		Type:               core.CondReady,
-		Status:             conditionStatus,
-		Reason:             conditionReason,
-		Message:            conditionMessage,
-		LastTransitionTime: currentTime,
-	}}
+	if pendingCount > 0 {
+		readyCondition.Status = "False"
+		readyCondition.Reason = "RollingUpdate"
+		readyCondition.Message = fmt.Sprintf("propagated to %d/%d namespaces (batch of %d)", result.CompletedCount, result.TotalTargets, len(result.Planned))
+
+		progressingCondition.Status = "True"
+		progressingCondition.Reason = "RollingUpdate"
+		progressingCondition.Message = fmt.Sprintf("updating %d remaining namespaces", pendingCount)
+	} else {
+		readyCondition.Status = "True"
+		readyCondition.Reason = "Reconciled"
+		readyCondition.Message = fmt.Sprintf("propagated to %d/%d namespaces", result.CompletedCount, result.TotalTargets)
+
+		progressingCondition.Status = "False"
+		progressingCondition.Reason = "RolloutComplete"
+		progressingCondition.Message = "all target namespaces synchronized"
+	}
+
+	configPropagation.Status.Conditions = []core.Condition{readyCondition, progressingCondition, degradedCondition}
+}
+
+// ApplyErrorStatus marks the resource as Degraded when reconciliation fails.
+func (configPropagation *ConfigPropagation) ApplyErrorStatus(reconcileErr error) {
+	currentTime := time.Now().UTC().Format(time.RFC3339)
+	message := ""
+	if reconcileErr != nil {
+		message = reconcileErr.Error()
+	}
+
+	configPropagation.Status.LastSyncTime = currentTime
+	configPropagation.Status.Conditions = []core.Condition{
+		{
+			Type:               core.CondReady,
+			Status:             "False",
+			Reason:             "Error",
+			Message:            message,
+			LastTransitionTime: currentTime,
+		},
+		{
+			Type:               core.CondProgressing,
+			Status:             "False",
+			Reason:             "Error",
+			Message:            "reconcile halted due to error",
+			LastTransitionTime: currentTime,
+		},
+		{
+			Type:               core.CondDegraded,
+			Status:             "True",
+			Reason:             "ReconcileError",
+			Message:            message,
+			LastTransitionTime: currentTime,
+		},
+	}
 }
 
 // DeepCopyInto copies the receiver into out.

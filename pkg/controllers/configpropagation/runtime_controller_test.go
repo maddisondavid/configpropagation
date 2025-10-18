@@ -69,7 +69,7 @@ func buildFakeClient(t *testing.T, objects ...client.Object) client.Client {
 
 func TestControllerAddsFinalizer(t *testing.T) {
 	kubeStub := &stubKubeClient{}
-	reconciler := &Reconciler{clientAdapter: kubeStub, workQueue: core.NewWorkQueue[Key](), rolloutPlanner: core.NewRolloutPlanner()}
+	reconciler := NewReconciler(kubeStub, nil, nil)
 
 	configPropagation := &configv1alpha1.ConfigPropagation{
 		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "default"},
@@ -97,7 +97,7 @@ func TestControllerAddsFinalizer(t *testing.T) {
 
 func TestControllerFinalizeRemovesFinalizer(t *testing.T) {
 	kubeStub := &stubKubeClient{managedNamespaces: []string{"ns1"}}
-	reconciler := &Reconciler{clientAdapter: kubeStub, workQueue: core.NewWorkQueue[Key](), rolloutPlanner: core.NewRolloutPlanner()}
+	reconciler := NewReconciler(kubeStub, nil, nil)
 
 	deletionTime := metav1.NewTime(time.Now())
 	configPropagation := &configv1alpha1.ConfigPropagation{

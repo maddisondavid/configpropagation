@@ -29,11 +29,13 @@ var _ reconcile.Reconciler = &ConfigPropagationController{}
 // NewController constructs a ConfigPropagationController wired with the manager's client.
 func NewController(manager ctrl.Manager) *ConfigPropagationController {
 	kubeClient := adapters.NewControllerRuntimeClient(manager.GetClient())
+	eventRecorder := adapters.NewControllerRuntimeEventRecorder(manager.GetEventRecorderFor("configpropagation"))
+	metricsRecorder := adapters.NewPrometheusMetricsRecorder()
 
 	return &ConfigPropagationController{
 		Client:     manager.GetClient(),
 		logger:     ctrl.Log.WithName("controllers").WithName("ConfigPropagation"),
-		reconciler: NewReconciler(kubeClient),
+		reconciler: NewReconciler(kubeClient, eventRecorder, metricsRecorder),
 	}
 }
 
@@ -61,7 +63,7 @@ func (controller *ConfigPropagationController) Reconcile(requestContext context.
 		}
 	} else {
 		if controllerutil.ContainsFinalizer(&configPropagation, core.Finalizer) {
-			if err := controller.reconciler.Finalize(&configPropagation.Spec); err != nil {
+			if err := controller.reconciler.Finalize(Key{Namespace: configPropagation.Namespace, Name: configPropagation.Name}, &configPropagation.Spec); err != nil {
 				return ctrl.Result{}, err
 			}
 
@@ -78,6 +80,16 @@ func (controller *ConfigPropagationController) Reconcile(requestContext context.
 	result, err := controller.reconciler.Reconcile(Key{Namespace: reconcileRequest.Namespace, Name: reconcileRequest.Name}, &configPropagation.Spec)
 	if err != nil {
 		requestLogger.Error(err, "reconciliation failed")
+
+		statusPatch := client.MergeFrom(configPropagation.DeepCopy())
+		configPropagation.ApplyErrorStatus(err)
+
+		if patchErr := controller.Status().Patch(requestContext, &configPropagation, statusPatch); patchErr != nil {
+			if apierrors.IsConflict(patchErr) {
+				return ctrl.Result{Requeue: true}, err
+			}
+			requestLogger.Error(patchErr, "failed to update status after error")
+		}
 
 		return ctrl.Result{}, err
 	}
