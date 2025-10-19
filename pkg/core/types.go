@@ -69,12 +69,3 @@ type NamespaceWarning struct {
 	Reason    string `json:"reason"`
 	Message   string `json:"message,omitempty"`
 }
-
-// SyncResult summarizes a reconciliation attempt.
-type SyncResult struct {
-	Planned  []string
-	Synced   []string
-	Failed   []OutOfSyncItem
-	Warnings []NamespaceWarning
-	Retries  map[string]int
-}

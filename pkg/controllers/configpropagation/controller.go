@@ -16,12 +16,10 @@ type Key struct {
 
 // Reconciler wires the kube client and a simple work queue.
 type Reconciler struct {
-	client adapters.KubeClient
-	queue  *core.WorkQueue[Key]
-}
-
-func NewReconciler(client adapters.KubeClient) *Reconciler {
-	return &Reconciler{client: client, queue: core.NewWorkQueue[Key]()}
+	client  adapters.KubeClient
+	queue   *core.WorkQueue[Key]
+	planner *core.RolloutPlanner
+	backoff func() core.BackoffStrategy
 }
 
 // OnCRChange enqueues a reconcile when the CR changes.
@@ -35,42 +33,75 @@ func (r *Reconciler) OnNamespaceLabelChange(ns, name string) {
 	r.queue.Add(Key{Namespace: ns, Name: name})
 }
 
+// NewReconciler constructs a Reconciler instance.
+func NewReconciler(client adapters.KubeClient) *Reconciler {
+	return &Reconciler{
+		client:  client,
+		queue:   core.NewWorkQueue[Key](),
+		planner: core.NewRolloutPlanner(),
+		backoff: core.DefaultBackoff,
+	}
+}
+
 // Reconcile performs one loop for the next item in the queue.
-func (r *Reconciler) Reconcile(spec *core.ConfigPropagationSpec) (*core.SyncResult, error) {
+func (r *Reconciler) Reconcile(key Key, spec *core.ConfigPropagationSpec) (core.RolloutResult, error) {
 	if spec == nil {
-		return nil, fmt.Errorf("spec is nil")
+		return core.RolloutResult{}, fmt.Errorf("spec is nil")
 	}
 	core.DefaultSpec(spec)
 	if err := core.ValidateSpec(spec); err != nil {
-		return nil, err
+		return core.RolloutResult{}, err
 	}
-	return reconcileImpl(r.client, spec)
+	return reconcileImpl(r.client, r.planner, key, spec, r.backoff)
 }
 
 // Internal implementation separated for testability and full coverage.
-func reconcileImpl(client adapters.KubeClient, spec *core.ConfigPropagationSpec) (*core.SyncResult, error) {
+func reconcileImpl(client adapters.KubeClient, planner *core.RolloutPlanner, key Key, spec *core.ConfigPropagationSpec, newBackoff func() core.BackoffStrategy) (core.RolloutResult, error) {
 	srcData, err := client.GetSourceConfigMap(spec.SourceRef.Namespace, spec.SourceRef.Name)
 	if err != nil {
-		return nil, fmt.Errorf("get source: %w", err)
+		return core.RolloutResult{}, fmt.Errorf("get source: %w", err)
 	}
 	effective := computeEffective(srcData, spec.DataKeys)
 	targets, err := listTargets(client, spec.NamespaceSelector)
 	if err != nil {
-		return nil, fmt.Errorf("list namespaces: %w", err)
+		return core.RolloutResult{}, fmt.Errorf("list namespaces: %w", err)
 	}
 	sort.Strings(targets)
 	batch := int32(5)
 	if spec.Strategy.BatchSize != nil {
 		batch = *spec.Strategy.BatchSize
 	}
-	planned := planTargets(targets, spec.Strategy.Type, batch)
-	result, err := syncTargets(client, planned, spec.SourceRef.Name, effective, spec.SourceRef.Namespace, spec.ConflictPolicy)
-	if err != nil {
-		return nil, err
+	hash := core.HashData(effective)
+	planned, completedBefore := planTargets(planner, key, hash, targets, spec.Strategy.Type, batch)
+	outcome := syncTargets(client, planned, spec.SourceRef.Name, effective, hash, spec.SourceRef.Namespace, spec.ConflictPolicy, newBackoff)
+
+	result := core.RolloutResult{
+		Planned:      append([]string(nil), planned...),
+		TotalTargets: len(targets),
+		Synced:       append([]string(nil), outcome.synced...),
+		Failed:       append([]core.OutOfSyncItem(nil), outcome.failed...),
+		Warnings:     append([]core.NamespaceWarning(nil), outcome.warnings...),
+		Retries:      make(map[string]int, len(outcome.retries)),
 	}
-	// Cleanup deselected namespaces per prune policy
+	for ns, attempts := range outcome.retries {
+		result.Retries[ns] = attempts
+	}
+
+	nsName := core.NamespacedName{Namespace: key.Namespace, Name: key.Name}
+	switch spec.Strategy.Type {
+	case core.StrategyRolling:
+		if len(planned) == 0 {
+			result.CompletedCount = completedBefore
+		} else {
+			result.CompletedCount = planner.MarkCompleted(nsName, hash, outcome.synced)
+		}
+	default:
+		planner.Forget(nsName)
+		result.CompletedCount = len(result.Synced)
+	}
+
 	if err := cleanupDeselected(client, spec, targets); err != nil {
-		return nil, err
+		return core.RolloutResult{}, err
 	}
 	return result, nil
 }
@@ -109,15 +140,20 @@ func listTargets(c adapters.KubeClient, sel *core.LabelSelector) ([]string, erro
 	return c.ListNamespacesBySelector(nilIfEmpty(sel.MatchLabels), exprs)
 }
 
-func syncTargets(c adapters.KubeClient, planned []string, name string, effective map[string]string, srcNS string, conflictPolicy string) (*core.SyncResult, error) {
-	result := &core.SyncResult{
-		Planned:  append([]string(nil), planned...),
-		Synced:   make([]string, 0, len(planned)),
-		Failed:   []core.OutOfSyncItem{},
-		Warnings: []core.NamespaceWarning{},
-		Retries:  make(map[string]int),
+type syncOutcome struct {
+	synced   []string
+	failed   []core.OutOfSyncItem
+	warnings []core.NamespaceWarning
+	retries  map[string]int
+}
+
+func syncTargets(c adapters.KubeClient, planned []string, name string, effective map[string]string, hash string, srcNS string, conflictPolicy string, newBackoff func() core.BackoffStrategy) syncOutcome {
+	outcome := syncOutcome{
+		synced:   make([]string, 0, len(planned)),
+		failed:   []core.OutOfSyncItem{},
+		warnings: []core.NamespaceWarning{},
+		retries:  make(map[string]int, len(planned)),
 	}
-	hash := core.HashData(effective)
 	labels := map[string]string{core.ManagedLabel: "true"}
 	source := fmt.Sprintf("%s/%s", srcNS, name)
 	annotations := map[string]string{
@@ -128,20 +164,20 @@ func syncTargets(c adapters.KubeClient, planned []string, name string, effective
 	if sizeCheck.Block {
 		msg := fmt.Sprintf("payload size %dB exceeds ConfigMap limit %dB", sizeCheck.Bytes, core.ConfigMapSizeLimitBytes)
 		for _, ns := range planned {
-			result.Failed = append(result.Failed, core.OutOfSyncItem{Namespace: ns, Reason: core.ReasonPayloadTooLarge, Message: msg})
-			result.Retries[ns] = 0
+			outcome.failed = append(outcome.failed, core.OutOfSyncItem{Namespace: ns, Reason: core.ReasonPayloadTooLarge, Message: msg})
+			outcome.retries[ns] = 0
 		}
-		return result, nil
+		return outcome
 	}
 	for _, ns := range planned {
 		if sizeCheck.Warn {
-			result.Warnings = append(result.Warnings, core.NamespaceWarning{
+			outcome.warnings = append(outcome.warnings, core.NamespaceWarning{
 				Namespace: ns,
 				Reason:    core.WarningLargePayload,
 				Message:   fmt.Sprintf("payload size %dB approaching limit %dB", sizeCheck.Bytes, core.ConfigMapSizeLimitBytes),
 			})
 		}
-		backoff := core.DefaultBackoff()
+		backoff := newBackoff()
 		attempts, err := backoff.Retry(func() error {
 			_, tgtLabels, tgtAnn, found, err := c.GetTargetConfigMap(ns, name)
 			if err != nil {
@@ -165,7 +201,7 @@ func syncTargets(c adapters.KubeClient, planned []string, name string, effective
 		}, func(err error) bool {
 			return core.ClassifyError(err) == core.ErrorCategoryTransient
 		})
-		result.Retries[ns] = attempts
+		outcome.retries[ns] = attempts
 		if err != nil {
 			category := core.ClassifyError(err)
 			reason := core.ReasonPermanentError
@@ -175,25 +211,17 @@ func syncTargets(c adapters.KubeClient, planned []string, name string, effective
 			case core.ErrorCategoryTransient:
 				reason = core.ReasonTransientError
 			}
-			result.Failed = append(result.Failed, core.OutOfSyncItem{Namespace: ns, Reason: reason, Message: err.Error()})
+			outcome.failed = append(outcome.failed, core.OutOfSyncItem{Namespace: ns, Reason: reason, Message: err.Error()})
 			continue
 		}
-		result.Synced = append(result.Synced, ns)
+		outcome.synced = append(outcome.synced, ns)
 	}
-	return result, nil
+	return outcome
 }
 
-func planTargets(all []string, strategy string, batchSize int32) []string {
-	if strategy == core.StrategyImmediate {
-		return append([]string(nil), all...)
-	}
-	if batchSize < 1 {
-		batchSize = 1
-	}
-	if int(batchSize) >= len(all) {
-		return append([]string(nil), all...)
-	}
-	return append([]string(nil), all[:batchSize]...)
+func planTargets(planner *core.RolloutPlanner, key Key, hash string, all []string, strategy string, batchSize int32) ([]string, int) {
+	id := core.NamespacedName{Namespace: key.Namespace, Name: key.Name}
+	return planner.Plan(id, hash, strategy, batchSize, all)
 }
 
 // cleanupDeselected removes or detaches targets in namespaces that were previously managed

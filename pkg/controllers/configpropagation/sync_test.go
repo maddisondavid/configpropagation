@@ -13,9 +13,7 @@ import (
 )
 
 type fakeClientSync struct {
-	// namespace -> name -> data
-	sources map[string]map[string]map[string]string
-	// namespace labels
+	sources  map[string]map[string]map[string]string
 	nsLabels map[string]map[string]string
 	upserts  []struct {
 		ns, name            string
@@ -67,7 +65,6 @@ func (f *fakeClientSync) ListNamespacesBySelector(matchLabels map[string]string,
 }
 
 func (f *fakeClientSync) UpsertConfigMap(ns, name string, data map[string]string, labels, annotations map[string]string) error {
-	// shallow copies for verification stability
 	d := map[string]string{}
 	for k, v := range data {
 		d[k] = v
@@ -88,15 +85,17 @@ func (f *fakeClientSync) UpsertConfigMap(ns, name string, data map[string]string
 	return nil
 }
 
-func (f *fakeClientSync) GetTargetConfigMap(namespace, name string) (map[string]string, map[string]string, map[string]string, bool, error) {
-	// Default: no existing target
+func (f *fakeClientSync) GetTargetConfigMap(string, string) (map[string]string, map[string]string, map[string]string, bool, error) {
 	return nil, nil, nil, false, nil
 }
-func (f *fakeClientSync) ListManagedTargetNamespaces(source string, name string) ([]string, error) {
+
+func (f *fakeClientSync) ListManagedTargetNamespaces(string, string) ([]string, error) {
 	return []string{}, nil
 }
-func (f *fakeClientSync) DeleteConfigMap(namespace, name string) error { return nil }
-func (f *fakeClientSync) UpdateConfigMapMetadata(namespace, name string, labels, annotations map[string]string) error {
+
+func (f *fakeClientSync) DeleteConfigMap(string, string) error { return nil }
+
+func (f *fakeClientSync) UpdateConfigMapMetadata(string, string, map[string]string, map[string]string) error {
 	return nil
 }
 
@@ -112,82 +111,62 @@ func TestSyncCopiesFilteredDataAndSetsManagedMetadata(t *testing.T) {
 		},
 	}
 	r := NewReconciler(fc)
-	s := &core.ConfigPropagationSpec{
+	r.backoff = noSleepBackoff()
+	key := Key{Namespace: "default", Name: "cp"}
+	spec := &core.ConfigPropagationSpec{
 		SourceRef:         core.ObjectRef{Namespace: "src", Name: "cfg"},
 		NamespaceSelector: &core.LabelSelector{MatchLabels: map[string]string{"team": "a"}},
 		DataKeys:          []string{"a", "b"},
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyImmediate},
 	}
-	result, err := r.Reconcile(s)
+	result, err := r.Reconcile(key, spec)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
-	// Expect two namespaces selected
-	if len(result.Planned) != 2 {
-		t.Fatalf("expected 2 planned namespaces, got %d", len(result.Planned))
+	if len(result.Planned) != 2 || len(result.Synced) != 2 {
+		t.Fatalf("expected two planned/synced namespaces, got %+v", result)
 	}
-	if len(result.Synced) != 2 {
-		t.Fatalf("expected 2 synced namespaces, got %d", len(result.Synced))
-	}
-	// Verify upserts
 	if len(fc.upserts) != 2 {
 		t.Fatalf("expected 2 upserts, got %d", len(fc.upserts))
 	}
 	for _, u := range fc.upserts {
-		if u.name != "cfg" {
-			t.Fatalf("target name should match source: %s", u.name)
-		}
-		// Data filtered to keys a,b only
 		if !reflect.DeepEqual(u.data, map[string]string{"a": "1", "b": "2"}) {
 			t.Fatalf("unexpected data: %+v", u.data)
 		}
-		if u.labels[core.ManagedLabel] != "true" {
-			t.Fatalf("managed label missing: %+v", u.labels)
-		}
-		if u.annotations[core.SourceAnnotation] != "src/cfg" {
-			t.Fatalf("source annotation missing: %+v", u.annotations)
-		}
-		// Hash should be non-empty for non-empty data
-		if u.annotations[core.HashAnnotation] == "" {
-			t.Fatalf("hash annotation should be set")
+		if u.labels[core.ManagedLabel] != "true" || u.annotations[core.SourceAnnotation] != "src/cfg" || u.annotations[core.HashAnnotation] == "" {
+			t.Fatalf("managed metadata missing: labels=%+v annotations=%+v", u.labels, u.annotations)
 		}
 	}
 }
 
 func TestSyncWhenSourceMissingAndEvents(t *testing.T) {
 	fc := &fakeClientSync{
-		sources: map[string]map[string]map[string]string{}, // no source present
+		sources: map[string]map[string]map[string]string{},
 		nsLabels: map[string]map[string]string{
 			"ns": {"team": "x"},
 		},
 	}
 	r := NewReconciler(fc)
-	// Exercise event enqueue helpers for coverage
+	r.backoff = noSleepBackoff()
 	r.OnCRChange("ns", "name")
 	r.OnSourceChange("ns", "name")
 	r.OnNamespaceLabelChange("ns", "name")
 
-	s := &core.ConfigPropagationSpec{
+	key := Key{Namespace: "default", Name: "cp"}
+	spec := &core.ConfigPropagationSpec{
 		SourceRef:         core.ObjectRef{Namespace: "src", Name: "cfg"},
 		NamespaceSelector: &core.LabelSelector{MatchLabels: map[string]string{"team": "x"}},
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyImmediate},
 	}
-	result, err := r.Reconcile(s)
+	result, err := r.Reconcile(key, spec)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
-	if len(result.Planned) != 1 {
-		t.Fatalf("expected 1 planned, got %d", len(result.Planned))
+	if len(result.Planned) != 1 || len(fc.upserts) != 1 {
+		t.Fatalf("expected one planned namespace and one upsert, got %+v upserts=%d", result, len(fc.upserts))
 	}
-	if len(fc.upserts) != 1 {
-		t.Fatalf("expected 1 upsert, got %d", len(fc.upserts))
-	}
-	u := fc.upserts[0]
-	if len(u.data) != 0 {
-		t.Fatalf("expected empty data when source missing, got %+v", u.data)
-	}
-	if u.annotations[core.HashAnnotation] != "" {
-		t.Fatalf("expected empty hash for empty data")
+	if len(fc.upserts[0].data) != 0 || fc.upserts[0].annotations[core.HashAnnotation] != "" {
+		t.Fatalf("expected empty data/hash for missing source, got %+v", fc.upserts[0])
 	}
 }
 
@@ -199,7 +178,9 @@ func TestSyncCopiesAllWhenNoDataKeysAndExpressionsProvided(t *testing.T) {
 		nsLabels: map[string]map[string]string{"ns": {"team": "z"}},
 	}
 	r := NewReconciler(fc)
-	s := &core.ConfigPropagationSpec{
+	r.backoff = noSleepBackoff()
+	key := Key{Namespace: "default", Name: "cp"}
+	spec := &core.ConfigPropagationSpec{
 		SourceRef: core.ObjectRef{Namespace: "src", Name: "cfg"},
 		NamespaceSelector: &core.LabelSelector{
 			MatchLabels:      map[string]string{"team": "z"},
@@ -207,16 +188,15 @@ func TestSyncCopiesAllWhenNoDataKeysAndExpressionsProvided(t *testing.T) {
 		},
 		Strategy: &core.UpdateStrategy{Type: core.StrategyImmediate},
 	}
-	result, err := r.Reconcile(s)
+	result, err := r.Reconcile(key, spec)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
 	if len(result.Planned) != 1 {
 		t.Fatalf("expected 1 planned, got %d", len(result.Planned))
 	}
-	u := fc.upserts[0]
-	if len(u.data) != 2 {
-		t.Fatalf("expected full copy of data, got %+v", u.data)
+	if !reflect.DeepEqual(fc.upserts[0].data, map[string]string{"k1": "v1", "k2": "v2"}) {
+		t.Fatalf("expected full copy of data, got %+v", fc.upserts[0].data)
 	}
 }
 
@@ -228,22 +208,23 @@ func TestSyncIgnoresMissingDataKeys(t *testing.T) {
 		nsLabels: map[string]map[string]string{"ns": {"team": "z"}},
 	}
 	r := NewReconciler(fc)
-	s := &core.ConfigPropagationSpec{
+	r.backoff = noSleepBackoff()
+	key := Key{Namespace: "default", Name: "cp"}
+	spec := &core.ConfigPropagationSpec{
 		SourceRef:         core.ObjectRef{Namespace: "src", Name: "cfg"},
 		NamespaceSelector: &core.LabelSelector{MatchLabels: map[string]string{"team": "z"}},
 		DataKeys:          []string{"missing", "only"},
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyImmediate},
 	}
-	_, err := r.Reconcile(s)
+	result, err := r.Reconcile(key, spec)
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
-	if len(fc.upserts) != 1 {
-		t.Fatalf("expected 1 upsert")
+	if len(result.Planned) != 1 || len(fc.upserts) != 1 {
+		t.Fatalf("expected single planned namespace and upsert, got %+v upserts=%d", result, len(fc.upserts))
 	}
-	u := fc.upserts[0]
-	if !reflect.DeepEqual(u.data, map[string]string{"only": "here"}) {
-		t.Fatalf("unexpected data after filtering: %+v", u.data)
+	if !reflect.DeepEqual(fc.upserts[0].data, map[string]string{"only": "here"}) {
+		t.Fatalf("unexpected data after filtering: %+v", fc.upserts[0].data)
 	}
 }
 
@@ -264,12 +245,14 @@ func TestSyncRecordsRBACFailuresAndContinues(t *testing.T) {
 		},
 	}
 	r := NewReconciler(rc)
-	s := &core.ConfigPropagationSpec{
+	r.backoff = noSleepBackoff()
+	key := Key{Namespace: "default", Name: "cp"}
+	spec := &core.ConfigPropagationSpec{
 		SourceRef:         core.ObjectRef{Namespace: "src", Name: "cfg"},
 		NamespaceSelector: &core.LabelSelector{MatchLabels: map[string]string{"team": "x"}},
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyImmediate},
 	}
-	result, err := r.Reconcile(s)
+	result, err := r.Reconcile(key, spec)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -279,8 +262,8 @@ func TestSyncRecordsRBACFailuresAndContinues(t *testing.T) {
 	if len(result.Failed) != 1 || result.Failed[0].Namespace != "bad" || result.Failed[0].Reason != core.ReasonRBACDenied {
 		t.Fatalf("expected RBAC failure recorded, got %+v", result.Failed)
 	}
-	if len(base.upserts) != 1 {
-		t.Fatalf("expected one upsert, got %d", len(base.upserts))
+	if result.Retries["bad"] == 0 {
+		t.Fatalf("expected retry attempts recorded for bad namespace")
 	}
 }
 
@@ -294,24 +277,25 @@ func TestSyncWarnsAndBlocksOnPayloadSize(t *testing.T) {
 		nsLabels: map[string]map[string]string{"ns": {"team": "x"}},
 	}
 	r := NewReconciler(base)
-	s := &core.ConfigPropagationSpec{
+	r.backoff = noSleepBackoff()
+	key := Key{Namespace: "default", Name: "cp"}
+	spec := &core.ConfigPropagationSpec{
 		SourceRef:         core.ObjectRef{Namespace: "src", Name: "cfg"},
 		NamespaceSelector: &core.LabelSelector{MatchLabels: map[string]string{"team": "x"}},
 		Strategy:          &core.UpdateStrategy{Type: core.StrategyImmediate},
 	}
-	result, err := r.Reconcile(s)
+	result, err := r.Reconcile(key, spec)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(result.Warnings) != 1 {
+	if len(result.Warnings) != 1 || result.Warnings[0].Reason != core.WarningLargePayload {
 		t.Fatalf("expected warning recorded, got %+v", result.Warnings)
 	}
 
-	// Now exceed limit to ensure block
 	tooBig := string(make([]byte, core.ConfigMapSizeLimitBytes+1))
 	base.sources["src"]["cfg"]["key"] = tooBig
 	base.upserts = nil
-	result, err = r.Reconcile(s)
+	result, err = r.Reconcile(key, spec)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

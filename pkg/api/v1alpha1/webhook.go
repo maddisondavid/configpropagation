@@ -47,61 +47,74 @@ func (c *ConfigPropagation) ValidateUpdate(runtime.Object) (admission.Warnings, 
 // ValidateDelete implements webhook.Validator.
 func (c *ConfigPropagation) ValidateDelete() (admission.Warnings, error) { return nil, nil }
 
-// ApplySyncResult updates status fields after a reconciliation attempt.
-func (c *ConfigPropagation) ApplySyncResult(result *core.SyncResult) {
+// ApplyRolloutStatus updates status fields after a reconcile using rollout progress.
+func (c *ConfigPropagation) ApplyRolloutStatus(result core.RolloutResult) {
 	now := time.Now().UTC().Format(time.RFC3339)
-	var planned, synced int
-	var failures []core.OutOfSyncItem
-	var warnings []core.NamespaceWarning
-	if result != nil {
-		planned = len(result.Planned)
-		synced = len(result.Synced)
-		failures = append([]core.OutOfSyncItem(nil), result.Failed...)
-		if len(result.Warnings) > 0 {
-			warnings = append([]core.NamespaceWarning(nil), result.Warnings...)
-		}
-	}
+	planned := len(result.Planned)
+	synced := len(result.Synced)
+	failures := append([]core.OutOfSyncItem(nil), result.Failed...)
+	warnings := append([]core.NamespaceWarning(nil), result.Warnings...)
+
 	c.Status.LastSyncTime = now
-	c.Status.TargetCount = int32(planned)
+	c.Status.TargetCount = int32(result.TotalTargets)
 	c.Status.SyncedCount = int32(synced)
-	c.Status.OutOfSyncCount = int32(len(failures))
 	if len(failures) > 0 {
 		c.Status.OutOfSync = failures
+		c.Status.OutOfSyncCount = int32(len(failures))
 	} else {
 		c.Status.OutOfSync = nil
+		pending := result.TotalTargets - result.CompletedCount
+		if pending < 0 {
+			pending = 0
+		}
+		c.Status.OutOfSyncCount = int32(pending)
 	}
 	if len(warnings) > 0 {
 		c.Status.Warnings = warnings
 	} else {
 		c.Status.Warnings = nil
 	}
-	if len(failures) == 0 {
-		c.Status.Conditions = []core.Condition{{
-			Type:               core.CondReady,
-			Status:             "True",
-			Reason:             "Reconciled",
-			Message:            fmt.Sprintf("propagated to %d namespaces", synced),
-			LastTransitionTime: now,
-		}}
+
+	if len(failures) > 0 {
+		message := fmt.Sprintf("%d of %d namespaces failed", len(failures), planned)
+		c.Status.Conditions = []core.Condition{
+			{
+				Type:               core.CondReady,
+				Status:             "False",
+				Reason:             "Errors",
+				Message:            message,
+				LastTransitionTime: now,
+			},
+			{
+				Type:               core.CondDegraded,
+				Status:             "True",
+				Reason:             "Errors",
+				Message:            message,
+				LastTransitionTime: now,
+			},
+		}
 		return
 	}
-	message := fmt.Sprintf("%d of %d namespaces failed", len(failures), planned)
-	c.Status.Conditions = []core.Condition{
-		{
-			Type:               core.CondReady,
-			Status:             "False",
-			Reason:             "Errors",
-			Message:            message,
-			LastTransitionTime: now,
-		},
-		{
-			Type:               core.CondDegraded,
-			Status:             "True",
-			Reason:             "Errors",
-			Message:            message,
-			LastTransitionTime: now,
-		},
+
+	pending := result.TotalTargets - result.CompletedCount
+	if pending < 0 {
+		pending = 0
 	}
+	reason := "Reconciled"
+	status := "True"
+	message := fmt.Sprintf("propagated to %d/%d namespaces", result.CompletedCount, result.TotalTargets)
+	if pending > 0 {
+		reason = "RollingUpdate"
+		status = "False"
+		message = fmt.Sprintf("propagated to %d/%d namespaces (batch of %d)", result.CompletedCount, result.TotalTargets, len(result.Planned))
+	}
+	c.Status.Conditions = []core.Condition{{
+		Type:               core.CondReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		LastTransitionTime: now,
+	}}
 }
 
 // DeepCopyInto copies the receiver into out.
