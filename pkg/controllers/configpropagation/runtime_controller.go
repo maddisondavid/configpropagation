@@ -54,7 +54,7 @@ func (controller *ConfigPropagationController) Reconcile(requestContext context.
 		return ctrl.Result{}, err
 	}
 
-	if configPropagation.ObjectMeta.DeletionTimestamp.IsZero() {
+	if configPropagation.DeletionTimestamp.IsZero() {
 		if !controllerutil.ContainsFinalizer(&configPropagation, core.Finalizer) {
 			controllerutil.AddFinalizer(&configPropagation, core.Finalizer)
 

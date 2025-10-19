@@ -118,7 +118,7 @@ func (reconciler *Reconciler) reconcileImpl(key Key, spec *core.ConfigPropagatio
 
 	rolloutHash := core.HashData(effectiveData)
 
-	plannedNamespaces, completedBefore := planTargets(reconciler.rolloutPlanner, key, rolloutHash, targetNamespaces, spec.Strategy.Type, batchSize)
+	plannedNamespaces, _ := planTargets(reconciler.rolloutPlanner, key, rolloutHash, targetNamespaces, spec.Strategy.Type, batchSize)
 
 	syncSummary, err := reconciler.syncTargets(key, plannedNamespaces, spec.SourceRef.Name, effectiveData, rolloutHash, spec.SourceRef.Namespace, spec.ConflictPolicy)
 	if err != nil {
@@ -133,7 +133,7 @@ func (reconciler *Reconciler) reconcileImpl(key Key, spec *core.ConfigPropagatio
 		outOfSyncSet[item.Namespace] = struct{}{}
 	}
 
-	completedTargetCount := completedBefore
+	completedTargetCount := 0
 	switch spec.Strategy.Type {
 	case core.StrategyRolling:
 		completedTargetCount = reconciler.rolloutPlanner.MarkCompleted(identifier, rolloutHash, syncSummary.completed)
